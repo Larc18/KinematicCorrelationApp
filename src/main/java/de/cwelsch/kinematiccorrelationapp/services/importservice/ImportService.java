@@ -22,6 +22,21 @@ import java.util.stream.Stream;
  */
 public class ImportService {
 
+    // KALIBRIERUNGSKORREKTUR SPRUNGGELENK: Der 3-Punkte-Vektorwinkel zwischen (Knie->Sprunggelenk)
+    // und (Zehen->Sprunggelenk) liegt bei Theias r_foot/r_toes-Landmarkendefinition im entspannten,
+    // ruhigen Stand NICHT bei 90° (wie ursprünglich angenommen), sondern systembedingt bei ~111.6°.
+    // Ohne Korrektur erzeugt das einen konstanten ~22° Offset gegenüber OpenCap über die gesamte
+    // Bewegung hinweg (RMSE wird künstlich aufgebläht, obwohl die ICC-Konsistenz - die gegen
+    // konstante Offsets robust ist - eigentlich gut ist).
+    // Empirisch hergeleitet AUSSCHLIESSLICH aus Theias eigener Rohgeometrie während der Stand-Baseline
+    // vor Bewegungsbeginn (erste 10 Frames aller SQT-Trials, n=84 über alle 14 Proband:innen der
+    // eigenen Datenerhebung, beide Seiten: rechts -21.63°/SD 2.98°, links -21.55°/SD 2.59°, praktisch
+    // identisch -> ein gemeinsamer, bilateral-symmetrischer Korrekturwert). KEIN Abgleich gegen
+    // OpenCap: Referenzpunkt ist die physiologische Ruhestand-Neutralstellung (ISB-Konvention: 0°
+    // Dorsi-/Plantarflexion im entspannten Stand), ausschließlich aus dem eigenen Theia-Rohsignal
+    // an dieser bekannten Referenzhaltung bestimmt.
+    private static final double ANKLE_NEUTRAL_REFERENCE_DEGREES = 90.0 + 21.59;
+
     private final String url;
     private final List<Trial> trialList;
 
@@ -250,12 +265,14 @@ public class ImportService {
                     // CRITICAL FIX: KNEE_ANGLE/HIP_FLEXION dürfen Math.abs() behalten, weil ihr
                     // Referenzpunkt (180°) am RAND des möglichen Wertebereichs von calculateAngle()
                     // ([0°,180°]) liegt — abs() ist dort ein No-op. Der Sprunggelenk-Referenzpunkt
-                    // (90°) liegt dagegen MITTEN im Wertebereich, und echte Bewegungen (z.B. Squat)
+                    // liegt dagegen MITTEN im Wertebereich, und echte Bewegungen (z.B. Squat)
                     // durchqueren ihn: abs() faltete Dorsalflexion und Plantarflexion auf dieselbe
                     // positive Kurve — die Kurve lief dadurch spiegelverkehrt zur signierten
                     // OpenCap-Kurve (Tal statt Berg), empirisch an echten Squat-Daten bestätigt.
+                    // Referenzwinkel siehe ANKLE_NEUTRAL_REFERENCE_DEGREES (empirisch aus Theias
+                    // eigener Stand-Baseline, nicht der naiv angenommene 90°-Wert).
                     jointAngles.put(Joints.ANKLE_ANGLE_R,
-                            90.0 - Point3D.calculateAngle(rShank.subtract(rFoot), rToes.subtract(rFoot)));
+                            ANKLE_NEUTRAL_REFERENCE_DEGREES - Point3D.calculateAngle(rShank.subtract(rFoot), rToes.subtract(rFoot)));
                 }
 
                 // --- LINKE UNTERE EXTREMITÄT ---
@@ -270,7 +287,7 @@ public class ImportService {
                 }
                 if (lShank != null && lFoot != null && lToes != null) {
                     jointAngles.put(Joints.ANKLE_ANGLE_L,
-                            90.0 - Point3D.calculateAngle(lShank.subtract(lFoot), lToes.subtract(lFoot)));
+                            ANKLE_NEUTRAL_REFERENCE_DEGREES - Point3D.calculateAngle(lShank.subtract(lFoot), lToes.subtract(lFoot)));
                 }
 
                 // --- OBERE EXTREMITÄTEN ---
