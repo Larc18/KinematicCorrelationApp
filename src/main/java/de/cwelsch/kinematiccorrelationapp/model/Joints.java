@@ -96,10 +96,11 @@ public enum Joints {
      * (Becken, LWS, obere Extremität, sowie Hüft-Adduktion/-Rotation und unteres
      * Sprunggelenk/Zehen) werden zwar importiert — z.B. weil die BRR-Fenstererkennung
      * PELVIS_ROTATION/LUMBAR_ROTATION benötigt — tauchen aber nirgends im Ergebnis auf.
-     * HIP_ADDUCTION_R/L und HIP_ROTATION_R/L sind zusätzlich bewusst ausgeschlossen,
-     * weil der Theia-Import diese beiden Winkel gar nicht berechnet (nur HIP_FLEXION
-     * wird aus den 3D-Gelenkzentren abgeleitet) — sie wären auf der Theia-Seite immer
-     * NaN und damit nie sinnvoll mit OpenCap vergleichbar.
+     * HIP_ADDUCTION_R/L und HIP_ROTATION_R/L werden seit der Umstellung auf die volle
+     * XYZ-Cardan-Zerlegung (siehe TheiaMarkerlessParser.computeRelativeJointAngles)
+     * zwar auf beiden Seiten berechnet, sind aber bewusst nicht Teil des Studienumfangs
+     * geblieben (keine primäre Fragestellung, kleinere ROM, weniger literaturbasierte
+     * Referenzwerte zur Plausibilisierung) — nicht weil sie technisch fehlen würden.
      */
     public static final List<Joints> ANALYSIS_SCOPE = List.of(
             HIP_FLEXION_R, HIP_FLEXION_L,

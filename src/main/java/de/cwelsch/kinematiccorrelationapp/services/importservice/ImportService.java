@@ -197,14 +197,20 @@ public class ImportService {
                 }
 
                 // ── Schritt 2: Euler-Winkel direkt aus vorberechneten Parser-Spalten lesen ─
-                // Becken- und LWS-Rotationen sowie Hüftflexion (rechts/links) wurden im
-                // TheiaMarkerlessParser aus vollen Rotationsmatrizen extrahiert (relative Rotation
-                // Becken->Oberschenkel für die Hüfte) und unter OpenCap-kompatiblen Keys gespeichert.
+                // Becken- und LWS-Rotationen sowie alle drei Hüft-Freiheitsgrade (rechts/links) wurden
+                // im TheiaMarkerlessParser aus vollen Rotationsmatrizen extrahiert (relative Rotation
+                // Becken->Oberschenkel für die Hüfte, XYZ-Cardan-Zerlegung nach Grood & Suntay 1983)
+                // und unter OpenCap-kompatiblen Keys gespeichert. HIP_ADDUCTION_R/L und HIP_ROTATION_R/L
+                // sind zwar (noch) nicht Teil von Joints.ANALYSIS_SCOPE (siehe dortiger Kommentar),
+                // werden aber jetzt mitgelesen, da der Parser sie liefert und sie z. B. für eine
+                // Plausibilitätsdiskussion im Anhang nützlich sein können.
                 // PELVIS_TX/TY/TZ werden bewusst NICHT gelesen (Einheit: Meter, nicht Grad).
                 for (Joints joint : List.of(
                         Joints.PELVIS_TILT, Joints.PELVIS_LIST, Joints.PELVIS_ROTATION,
                         Joints.LUMBAR_EXTENSION, Joints.LUMBAR_BENDING, Joints.LUMBAR_ROTATION,
-                        Joints.HIP_FLEXION_R, Joints.HIP_FLEXION_L)) {
+                        Joints.HIP_FLEXION_R, Joints.HIP_FLEXION_L,
+                        Joints.HIP_ADDUCTION_R, Joints.HIP_ADDUCTION_L,
+                        Joints.HIP_ROTATION_R, Joints.HIP_ROTATION_L)) {
                     // Direkter Key-Lookup auf der originalen columns-Map (case-sensitive, exakt wie Parser)
                     Double val = coords.get(joint.getOpenCapKey().toLowerCase().trim());
                     if (val != null && !val.isNaN()) {
