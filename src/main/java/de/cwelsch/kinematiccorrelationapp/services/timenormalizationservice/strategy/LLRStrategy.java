@@ -14,8 +14,16 @@ public class LLRStrategy implements MovementStrategy {
 
     private static final double ROM_ONSET_RATIO = 0.05; // 5% Schwellenwert der Beuge-Amplitude
 
+    /**
+     * Detects the lateral-lunge-right movement window by locating the deepest right-knee flexion
+     * (bottom frame) and expanding outward until the knee angle drops below a 5%-of-ROM threshold
+     * above baseline. Falls back to the entire trial if no plausible peak, ROM, or window boundary is found.
+     *
+     * @param frames the sequential tracking data points collected during the trial recording
+     * @return the detected movement window, or a fallback window covering the entire trial
+     */
     @Override
-    public double[] findMovementWindowSeconds(List<FrameData> frames) {
+    public MovementWindow findMovementWindow(List<FrameData> frames) {
         if (frames == null || frames.size() < 10) {
             return fallback(frames);
         }
@@ -90,14 +98,15 @@ public class LLRStrategy implements MovementStrategy {
             return fallback(frames);
         }
 
-        return new double[]{
+        return new MovementWindow(
                 frames.get(startFrame).second(),
-                frames.get(endFrame).second()
-        };
+                frames.get(endFrame).second(),
+                false
+        );
     }
 
-    private double[] fallback(List<FrameData> frames) {
-        if (frames == null || frames.isEmpty()) return new double[]{0.0, 0.0};
-        return new double[]{frames.get(0).second(), frames.get(frames.size() - 1).second()};
+    private MovementWindow fallback(List<FrameData> frames) {
+        if (frames == null || frames.isEmpty()) return new MovementWindow(0.0, 0.0, true);
+        return new MovementWindow(frames.get(0).second(), frames.get(frames.size() - 1).second(), true);
     }
 }

@@ -21,16 +21,23 @@ import java.util.Set;
  * Service responsible for harmonizing time-series data across different sampling architectures.
  * Isolates active movement windows, linearizes local tracking signal drops, and normalizes
  * coordinate matrices using cubic spline interpolation onto a standardized 101-point (0% - 100%) scale.
- *
+ * <p>
  * Frame-rate independence: Strategies return movement boundaries in seconds, not frame indices.
  * Each trial then maps those timestamps to its own frame indices, ensuring that 50% of the
  * normalized curve represents the same movement phase regardless of system frame rate (60fps vs 85fps).
  */
 public class TimeNormalizationService {
 
-    private static final int    NORMALIZED_POINTS       = 101;
+    private static final int NORMALIZED_POINTS = 101;
     private static final double MISSING_THRESHOLD_RATIO = 0.15;
 
+    /**
+     * Pairs each OpenCap trial with its matching Theia trial (by file name prefix and sequence order),
+     * selects the appropriate {@link MovementStrategy} per movement, and normalizes both trials of
+     * each pair onto the shared 101-point (0%-100%) timeline.
+     *
+     * @param trialSession the session whose trials are paired and normalized in place
+     */
     public void normalizeTrial(TrialSession trialSession) {
         System.out.println("========================================");
         System.out.println("Starting TimeNormalizationService (0% - 100%)...");
@@ -44,7 +51,7 @@ public class TimeNormalizationService {
         List<Trial> trials = trialSession.getTrials();
 
         Map<String, List<Trial>> openCapMovementMap = new HashMap<>();
-        Map<String, List<Trial>> theiaMovementMap   = new HashMap<>();
+        Map<String, List<Trial>> theiaMovementMap = new HashMap<>();
 
         for (Trial trial : trials) {
             if (trial == null || trial.getSourceFileName() == null) continue;
@@ -80,26 +87,45 @@ public class TimeNormalizationService {
 
             for (int i = 0; i < maxPairs; i++) {
                 Trial openCapTrial = ocList.get(i);
-                Trial theiaTrial   = thList.get(i);
+                Trial theiaTrial = thList.get(i);
+
+                // Sicherheitsprüfung: Die Zuordnung erfolgt über den Dateinamens-Präfix, nicht
+                // über das bereits bekannte Movement. Bei einer Präfix-Kollision zwischen zwei
+                // unterschiedlichen Bewegungsordnern würden sonst falsche Trials gegeneinander
+                // normalisiert und verglichen werden, ohne dass ein Fehler sichtbar wird.
+                if (openCapTrial.getMovement() != theiaTrial.getMovement()) {
+                    System.err.printf("  [Skip] Movement mismatch for prefix '%s': OpenCap '%s' (%s) vs Theia '%s' (%s) — skipping pair.%n",
+                            prefix,
+                            java.nio.file.Paths.get(openCapTrial.getSourceFileName()).getFileName(), openCapTrial.getMovement(),
+                            java.nio.file.Paths.get(theiaTrial.getSourceFileName()).getFileName(), theiaTrial.getMovement());
+                    continue;
+                }
 
                 System.out.printf("Harmonizing pair: [%s] & [%s]%n",
                         java.nio.file.Paths.get(openCapTrial.getSourceFileName()).getFileName(),
                         java.nio.file.Paths.get(theiaTrial.getSourceFileName()).getFileName());
 
+                // CRITICAL FIX: Ein "plain" switch wirft eine NullPointerException, sobald der
+                // Selektor null ist. Da unerkannte Datei-/Ordnernamen zu movement == null führen
+                // können, muss dieser Fall explizit über "case null" abgefangen werden.
                 MovementStrategy strategy = switch (openCapTrial.getMovement()) {
+                    case null -> {
+                        System.err.printf("  [Warning] Trial '%s' has no recognized Movement — falling back to DefaultStrategy.%n",
+                                java.nio.file.Paths.get(openCapTrial.getSourceFileName()).getFileName());
+                        yield new DefaultStrategy();
+                    }
                     case SQUAT -> new SquatStrategy();
                     case COUNTERMOVEMENT_JUMP -> new CMJStrategy();
                     case LATERAL_LUNGE_LEFT -> new LLLStrategy();
                     case LATERAL_LUNGE_RIGHT -> new LLRStrategy();
                     case BECKEN_RUMPF_ROTATION -> new BBRStrategy();
-                    default -> new DefaultStrategy();
                 };
 
                 // Jeder Trial bestimmt sein Fenster selbst (in Sekunden),
                 // sodass die Fenstererkennung unabhängig von der Framerate korrekt arbeitet.
                 // 50% der normierten Kurve entspricht damit für beide Systeme derselben Bewegungsphase.
                 normalizeSingleTrial(openCapTrial, strategy);
-                normalizeSingleTrial(theiaTrial,   strategy);
+                normalizeSingleTrial(theiaTrial, strategy);
             }
         }
 
@@ -114,17 +140,30 @@ public class TimeNormalizationService {
         List<FrameData> frames = trial.getFrameDataList();
         if (frames == null || frames.isEmpty()) return;
 
+        // CRITICAL FIX (a): Trials mit kritischen Validierungsfehlern (siehe TechnicalValidationService)
+        // werden von der Normalisierung und damit von der gesamten Statistik/dem Export ausgeschlossen.
+        if (trial.isExcluded()) {
+            System.err.printf("  [Skip] '%s' excluded from analysis (Reason: %s).%n",
+                    trial.getSourceFileName(), trial.getExclusionReason());
+            return;
+        }
+
         // Fenster in Sekunden — unabhängig von der Framerate des jeweiligen Systems
-        double[] windowSeconds = strategy.findMovementWindowSeconds(frames);
-        double startSec = windowSeconds[0];
-        double endSec   = windowSeconds[1];
+        MovementWindow window = strategy.findMovementWindow(frames);
+        double startSec = window.startSeconds();
+        double endSec = window.endSeconds();
+
+        // CRITICAL FIX (b): Kennzeichnet, ob die Fensterhysterese des jeweiligen Movements
+        // fehlgeschlagen ist und stattdessen der komplette Trial als Fenster verwendet wurde.
+        // Downstream (CSV-/HTML-Export) wird dies sichtbar gemacht statt es zu verschweigen.
+        trial.setWindowFallbackUsed(window.fallbackUsed());
 
         int startIdx = findFrameForTime(frames, startSec);
-        int endIdx   = findFrameForTime(frames, endSec);
+        int endIdx = findFrameForTime(frames, endSec);
 
         // Defensive Boundary-Clips
         startIdx = Math.max(0, Math.min(startIdx, frames.size() - 1));
-        endIdx   = Math.max(startIdx, Math.min(endIdx, frames.size() - 1));
+        endIdx = Math.max(startIdx, Math.min(endIdx, frames.size() - 1));
 
         int windowLength = endIdx - startIdx + 1;
 
@@ -138,11 +177,14 @@ public class TimeNormalizationService {
             return;
         }
 
-        for (Joints joint : Joints.values()) {
+        // Nur der fachliche Analyseumfang (Hüfte/Knie/Sprunggelenk) wird normalisiert —
+        // andere Gelenke (Becken, LWS etc.) werden nur roh für die Fenstererkennung
+        // der jeweiligen MovementStrategy gebraucht, siehe Joints.ANALYSIS_SCOPE.
+        for (Joints joint : Joints.ANALYSIS_SCOPE) {
             if (!frames.get(startIdx).jointAngle().containsKey(joint)) continue;
 
-            double[] cutAngles    = new double[windowLength];
-            int      missingCount = 0;
+            double[] cutAngles = new double[windowLength];
+            int missingCount = 0;
 
             for (int f = 0; f < windowLength; f++) {
                 Double angle = frames.get(startIdx + f).jointAngle().get(joint);
@@ -168,25 +210,39 @@ public class TimeNormalizationService {
 
     /**
      * Finds the frame index whose timestamp is closest to the target time in seconds.
+     *
+     * <p>Package-private (rather than private) so it can be unit-tested directly.
+     *
+     * @param frames        the sequential tracking data points to search
+     * @param targetSeconds the target timestamp, in seconds
+     * @return the index of the frame whose timestamp is closest to {@code targetSeconds};
+     * on an exact tie, the earlier (lower-index) frame wins
      */
-    private int findFrameForTime(List<FrameData> frames, double targetSeconds) {
-        int    bestIdx   = 0;
+    int findFrameForTime(List<FrameData> frames, double targetSeconds) {
+        int bestIdx = 0;
         double bestDelta = Double.MAX_VALUE;
 
         for (int i = 0; i < frames.size(); i++) {
             double delta = Math.abs(frames.get(i).second() - targetSeconds);
             if (delta < bestDelta) {
                 bestDelta = delta;
-                bestIdx   = i;
+                bestIdx = i;
             }
         }
         return bestIdx;
     }
 
     /**
-     * Patches missing signal gaps via bidirectional linear interpolation.
+     * Patches missing signal gaps via bidirectional linear interpolation. Interior gaps (surrounded
+     * by valid values on both sides) are linearly interpolated; leading/trailing gaps (no valid value
+     * on one side) are filled by holding the nearest valid value on the other side. Mutates {@code angles}
+     * in place. An array without any valid value at all is left unchanged (still all NaN).
+     *
+     * <p>Package-private (rather than private) so it can be unit-tested directly.
+     *
+     * @param angles the angle track to patch in place; NaN marks a missing sample
      */
-    private void fillMissingLinear(double[] angles) {
+    void fillMissingLinear(double[] angles) {
         int n = angles.length;
 
         for (int i = 0; i < n; i++) {
@@ -216,9 +272,16 @@ public class TimeNormalizationService {
     }
 
     /**
-     * Interpolates a raw angle array onto an equispaced 101-point grid (0–100%).
+     * Interpolates a raw angle array onto an equispaced 101-point grid (0–100%) using a natural cubic
+     * spline. The input samples are treated as equidistant across the 0–100% range, with the last
+     * sample pinned to exactly 100% to avoid floating-point drift.
+     *
+     * <p>Package-private (rather than private) so it can be unit-tested directly.
+     *
+     * @param cutAngles the raw angle samples for the detected movement window (at least 3 points)
+     * @return a 101-point array with the interpolated values at 0%, 1%, ..., 100%
      */
-    private double[] performSplineInterpolation(double[] cutAngles) {
+    double[] performSplineInterpolation(double[] cutAngles) {
         int n = cutAngles.length;
 
         double[] x = new double[n];
@@ -227,8 +290,8 @@ public class TimeNormalizationService {
         }
         x[n - 1] = 100.0; // Floating-point boundary fix
 
-        SplineInterpolator       interpolator = new SplineInterpolator();
-        PolynomialSplineFunction spline       = interpolator.interpolate(x, cutAngles);
+        SplineInterpolator interpolator = new SplineInterpolator();
+        PolynomialSplineFunction spline = interpolator.interpolate(x, cutAngles);
 
         double[] normalized = new double[NORMALIZED_POINTS];
         for (int i = 0; i < NORMALIZED_POINTS; i++) {

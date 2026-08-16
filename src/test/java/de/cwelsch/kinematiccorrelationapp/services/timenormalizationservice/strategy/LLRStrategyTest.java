@@ -54,39 +54,40 @@ class LLRStrategyTest {
         }
 
         // WHEN: Gating-Fenster berechnen
-        double[] window = llrStrategy.findMovementWindowSeconds(frames);
+        MovementWindow window = llrStrategy.findMovementWindow(frames);
 
         // THEN: Validierung der zeitlichen Gating-Grenzen
         assertNotNull(window);
-        assertEquals(2, window.length);
-        assertTrue(window[0] >= 0.0, "Startzeitpunkt darf nicht negativ sein");
-        assertTrue(window[0] < window[1], "Start-Frame muss vor dem End-Frame liegen");
+        assertFalse(window.fallbackUsed(), "Ein klar erkennbarer LLR darf nicht auf den Fallback zurückfallen");
+        assertTrue(window.startSeconds() >= 0.0, "Startzeitpunkt darf nicht negativ sein");
+        assertTrue(window.startSeconds() < window.endSeconds(), "Start-Frame muss vor dem End-Frame liegen");
 
         // Die Bewegung startet bei Frame 45. Abzüglich des 5-Frame-Puffers der Strategie (45 - 5 = 40)
         // darf das Gating frühestens ab Frame 39/40 anspringen.
         double expectedMinStart = (45.0 - 6.0) / sampleRate;
-        assertTrue(window[0] >= expectedMinStart, "Start-Gating hat fälschlicherweise zu früh angeschlagen");
+        assertTrue(window.startSeconds() >= expectedMinStart, "Start-Gating hat fälschlicherweise zu früh angeschlagen");
 
         // Die Rückkehr zur gestreckten Baseline (< 5°) wird um Frame 165 erwartet
-        assertTrue(window[1] > (155.0 / sampleRate), "End-Gating hat die Streckphase zu früh abgebrochen");
-        assertTrue(window[1] <= (175.0 / sampleRate), "End-Gating hat die Stabilisierungsphase verpasst");
+        assertTrue(window.endSeconds() > (155.0 / sampleRate), "End-Gating hat die Streckphase zu früh abgebrochen");
+        assertTrue(window.endSeconds() <= (175.0 / sampleRate), "End-Gating hat die Stabilisierungsphase verpasst");
     }
 
     @Test
     @DisplayName("Should gracefully fall back to full file boundaries on insufficient data")
     void testFallbackScenarios() {
         // Fall 1: Null-Sicherheit prüfen
-        double[] nullWindow = llrStrategy.findMovementWindowSeconds(null);
-        assertArrayEquals(new double[]{0.0, 0.0}, nullWindow);
+        MovementWindow nullWindow = llrStrategy.findMovementWindow(null);
+        assertEquals(new MovementWindow(0.0, 0.0, true), nullWindow);
 
         // Fall 2: Zu wenige Frames für valide Baseline (weniger als 10 Frames)
         List<FrameData> shortList = new ArrayList<>();
         for (int i = 0; i < 8; i++) {
             shortList.add(new FrameData(i + 1, i * 0.1, new HashMap<>(), new HashMap<>()));
         }
-        double[] shortWindow = llrStrategy.findMovementWindowSeconds(shortList);
-        assertEquals(0.0, shortWindow[0]);
-        assertEquals(0.7, shortWindow[1], 0.0001);
+        MovementWindow shortWindow = llrStrategy.findMovementWindow(shortList);
+        assertTrue(shortWindow.fallbackUsed());
+        assertEquals(0.0, shortWindow.startSeconds());
+        assertEquals(0.7, shortWindow.endSeconds(), 0.0001);
 
         // Fall 3: Ausreichend Frames, aber der master-relevante Kanal KNEE_ANGLE_R fehlt komplett
         List<FrameData> missingChannelList = new ArrayList<>();
@@ -95,8 +96,9 @@ class LLRStrategyTest {
             angles.put(Joints.KNEE_ANGLE_L, 15.0); // Linkes Knie ist beim LLR-Pfad blind
             missingChannelList.add(new FrameData(i + 1, i * 0.02, new HashMap<>(), angles));
         }
-        double[] missingChannelWindow = llrStrategy.findMovementWindowSeconds(missingChannelList);
-        assertEquals(0.0, missingChannelWindow[0]);
-        assertEquals(49 * 0.02, missingChannelWindow[1], 0.0001);
+        MovementWindow missingChannelWindow = llrStrategy.findMovementWindow(missingChannelList);
+        assertTrue(missingChannelWindow.fallbackUsed());
+        assertEquals(0.0, missingChannelWindow.startSeconds());
+        assertEquals(49 * 0.02, missingChannelWindow.endSeconds(), 0.0001);
     }
 }

@@ -15,14 +15,17 @@ import java.util.Set;
  */
 public class TechnicalValidationService implements ValidationService<TrialSession> {
 
-    private static final Set<Joints> CRITICAL_JOINTS = Set.of(
-            Joints.KNEE_ANGLE_R, Joints.KNEE_ANGLE_L,
-            Joints.HIP_FLEXION_R, Joints.HIP_FLEXION_L,
-            Joints.HIP_ADDUCTION_R, Joints.HIP_ADDUCTION_L,
-            Joints.HIP_ROTATION_R, Joints.HIP_ROTATION_L,
-            Joints.ANKLE_ANGLE_R, Joints.ANKLE_ANGLE_L
-    );
+    // Deckt sich bewusst mit Joints.ANALYSIS_SCOPE (Hüfte/Knie/Sprunggelenk) — nur Winkel,
+    // die tatsächlich in Statistik/Export landen, werden auch kritisch validiert.
+    private static final Set<Joints> CRITICAL_JOINTS = Set.copyOf(Joints.ANALYSIS_SCOPE);
 
+    /**
+     * Audits every trial in the session for structural frame-sequence gaps and missing or NaN
+     * values on the critical (analysis-scope) joints, marking trials with critical failures as excluded.
+     *
+     * @param trialSession the session whose trials are validated
+     * @return a report listing the technical errors and warnings found
+     */
     @Override
     public ValidationReport validate(TrialSession trialSession) {
         System.out.println("Starting TechnicalValidationService...");
@@ -49,6 +52,9 @@ public class TechnicalValidationService implements ValidationService<TrialSessio
                         "Critical Failure: Data file tracking layer extracted but contains empty frame metrics.",
                         fileName, -1, 0.0
                 );
+                // CRITICAL FIX (a): Trials mit kritischen Fehlern werden ab sofort aus der
+                // weiteren Normalisierung/Statistik ausgeschlossen statt nur geloggt zu werden.
+                trial.markExcluded("Empty frame metrics");
                 continue;
             }
 
@@ -70,11 +76,13 @@ public class TechnicalValidationService implements ValidationService<TrialSessio
                                 String.format("Critical Timeline Gap: Detected missing sequence gap of %d frame(s).", missingFrames),
                                 fileName, expectedFrameNumber, expectedTime
                         );
+                        trial.markExcluded(String.format("Timeline gap of %d frame(s) at frame %d", missingFrames, expectedFrameNumber));
                     } else {
                         report.addError(
                                 "Critical Structural Anomaly: Out-of-order frame index or duplicate frame detected.",
                                 fileName, frame.frame(), frame.second()
                         );
+                        trial.markExcluded(String.format("Out-of-order/duplicate frame at frame %d", frame.frame()));
                     }
                     // Synchronisiere Erwartungshorizont wieder auf den aktuellen realen Frame
                     expectedFrameNumber = frame.frame();

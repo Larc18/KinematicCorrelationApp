@@ -55,21 +55,21 @@ class BRRStrategyTest {
         }
 
         // WHEN: Gating-Fenster berechnen
-        double[] window = bbrStrategy.findMovementWindowSeconds(frames);
+        MovementWindow window = bbrStrategy.findMovementWindow(frames);
 
         // THEN: Validierung der Phasenübergänge
         assertNotNull(window);
-        assertEquals(2, window.length);
-        assertTrue(window[0] >= 0.0, "Startzeitpunkt darf nicht negativ sein");
-        assertTrue(window[0] < window[1], "Start-Frame muss vor dem End-Frame liegen");
+        assertFalse(window.fallbackUsed(), "Eine klar erkennbare BRR darf nicht auf den Fallback zurückfallen");
+        assertTrue(window.startSeconds() >= 0.0, "Startzeitpunkt darf nicht negativ sein");
+        assertTrue(window.startSeconds() < window.endSeconds(), "Start-Frame muss vor dem End-Frame liegen");
 
         // Bewegung startet bei Frame 40. Mit dem 5-Frame-Vorlauf-Puffer (40 - 5 = 35) erwarten wir den Start ab Frame 35
         double expectedMinStart = (40.0 - 6.0) / sampleRate;
-        assertTrue(window[0] >= expectedMinStart, "Start-Gating hat unbegründet vor dem Bewegungsonset angeschlagen");
+        assertTrue(window.startSeconds() >= expectedMinStart, "Start-Gating hat unbegründet vor dem Bewegungsonset angeschlagen");
 
         // Das Ende (Rückkehr zur Baseline < 5° nach dem zweiten Peak) sollte um Frame 180 detektiert werden
-        assertTrue(window[1] > (165.0 / sampleRate), "End-Gating hat die Rückrotationsphase zu früh abgeschnitten");
-        assertTrue(window[1] <= (195.0 / sampleRate), "End-Gating hat den Übergang in die finale Ruhephase verpasst");
+        assertTrue(window.endSeconds() > (165.0 / sampleRate), "End-Gating hat die Rückrotationsphase zu früh abgeschnitten");
+        assertTrue(window.endSeconds() <= (195.0 / sampleRate), "End-Gating hat den Übergang in die finale Ruhephase verpasst");
     }
 
     @Test
@@ -98,31 +98,31 @@ class BRRStrategyTest {
         }
 
         // WHEN: Gating-Fenster über Pelvis-Fallback berechnen
-        double[] window = bbrStrategy.findMovementWindowSeconds(frames);
+        MovementWindow window = bbrStrategy.findMovementWindow(frames);
 
         // THEN: Validierung
         assertNotNull(window);
-        assertEquals(2, window.length);
-        assertTrue(window[0] < window[1]);
-        assertTrue(window[0] >= (30.0 / sampleRate), "Pelvis-Fallback-Start zu früh berechnet");
-        assertTrue(window[1] > (145.0 / sampleRate), "Pelvis-Fallback-Ende hat Rückrotation abgeschnitten");
+        assertTrue(window.startSeconds() < window.endSeconds());
+        assertTrue(window.startSeconds() >= (30.0 / sampleRate), "Pelvis-Fallback-Start zu früh berechnet");
+        assertTrue(window.endSeconds() > (145.0 / sampleRate), "Pelvis-Fallback-Ende hat Rückrotation abgeschnitten");
     }
 
     @Test
     @DisplayName("Should gracefully fall back to full file boundaries on insufficient data entries")
     void testFallbackScenarios() {
         // Fall 1: Übergabe von null abfangen
-        double[] nullWindow = bbrStrategy.findMovementWindowSeconds(null);
-        assertArrayEquals(new double[]{0.0, 0.0}, nullWindow);
+        MovementWindow nullWindow = bbrStrategy.findMovementWindow(null);
+        assertEquals(new MovementWindow(0.0, 0.0, true), nullWindow);
 
         // Fall 2: Zu kurze Aufnahmedauer (weniger als 10 Frames für die Baseline)
         List<FrameData> shortList = new ArrayList<>();
         for (int i = 0; i < 7; i++) {
             shortList.add(new FrameData(i + 1, i * 0.1, new HashMap<>(), new HashMap<>()));
         }
-        double[] shortWindow = bbrStrategy.findMovementWindowSeconds(shortList);
-        assertEquals(0.0, shortWindow[0]);
-        assertEquals(0.6, shortWindow[1], 0.0001);
+        MovementWindow shortWindow = bbrStrategy.findMovementWindow(shortList);
+        assertTrue(shortWindow.fallbackUsed());
+        assertEquals(0.0, shortWindow.startSeconds());
+        assertEquals(0.6, shortWindow.endSeconds(), 0.0001);
 
         // Fall 3: Ausreichend Frames, aber kein einziger rotatorischer Kanal vorhanden
         List<FrameData> missingChannelsList = new ArrayList<>();
@@ -131,8 +131,9 @@ class BRRStrategyTest {
             angles.put(Joints.KNEE_ANGLE_R, 45.0); // Kniewinkel nützt bei Rumpfrotation nichts
             missingChannelsList.add(new FrameData(i + 1, i * 0.02, new HashMap<>(), angles));
         }
-        double[] missingChannelsWindow = bbrStrategy.findMovementWindowSeconds(missingChannelsList);
-        assertEquals(0.0, missingChannelsWindow[0]);
-        assertEquals(59 * 0.02, missingChannelsWindow[1], 0.0001);
+        MovementWindow missingChannelsWindow = bbrStrategy.findMovementWindow(missingChannelsList);
+        assertTrue(missingChannelsWindow.fallbackUsed());
+        assertEquals(0.0, missingChannelsWindow.startSeconds());
+        assertEquals(59 * 0.02, missingChannelsWindow.endSeconds(), 0.0001);
     }
 }

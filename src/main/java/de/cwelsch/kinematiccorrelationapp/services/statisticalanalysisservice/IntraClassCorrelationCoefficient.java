@@ -13,7 +13,8 @@ public class IntraClassCorrelationCoefficient {
 
     /**
      * Calculates the ICC(3,1) consistency value for two matched sample distributions.
-     * * @param targetA Continuous tracking series values from system A (e.g., OpenCap).
+     *
+     * @param targetA Continuous tracking series values from system A (e.g., OpenCap).
      * @param targetB Continuous tracking series values from system B (e.g., Theia).
      * @return The computed consistency coefficient constrained within [-1.0, 1.0],
      * or Double.NaN if the distributions are mismatched or empty.
@@ -64,7 +65,12 @@ public class IntraClassCorrelationCoefficient {
 
         // ICC(3,1) = (BMS - EMS) / (BMS + EMS)  [k=2, daher kein (k-1)*EMS Zusatzterm]
         double denominator = bms + ems;
-        if (denominator < 1e-9) return 1.0;
+        // CRITICAL FIX: BMS+EMS ~ 0 means there is no variance at all in the data (e.g. every
+        // subject produced an identical constant value on both systems). That is a degenerate,
+        // statistically undefined case — it previously returned 1.0 ("perfect agreement"), which
+        // silently overstated reliability. Arrays.equals() above already handles true identical
+        // series, so anything reaching here has zero measurable variance to judge agreement by.
+        if (denominator < NUMERICAL_UNDERFLOW_THRESHOLD) return Double.NaN;
 
         return Math.max(-1.0, Math.min(1.0, (bms - ems) / denominator));
     }

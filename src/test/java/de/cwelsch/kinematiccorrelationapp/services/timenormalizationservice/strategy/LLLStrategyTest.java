@@ -54,39 +54,40 @@ class LLLStrategyTest {
         }
 
         // WHEN: Gating-Fenster berechnen
-        double[] window = lllStrategy.findMovementWindowSeconds(frames);
+        MovementWindow window = lllStrategy.findMovementWindow(frames);
 
         // THEN: Phasenbezogene Grenzen validieren
         assertNotNull(window);
-        assertEquals(2, window.length);
-        assertTrue(window[0] >= 0.0, "Startzeitpunkt darf nicht negativ sein");
-        assertTrue(window[0] < window[1], "Startzeitpunkt muss vor dem Endzeitpunkt liegen");
+        assertFalse(window.fallbackUsed(), "Ein klar erkennbarer LLL darf nicht auf den Fallback zurückfallen");
+        assertTrue(window.startSeconds() >= 0.0, "Startzeitpunkt darf nicht negativ sein");
+        assertTrue(window.startSeconds() < window.endSeconds(), "Startzeitpunkt muss vor dem Endzeitpunkt liegen");
 
         // Da die Bewegung bei Frame 45 startet und die Strategie einen 5-Frame-Puffer abzieht (45 - 5 = 40),
         // muss der berechnete Startzeitpunkt präzise ab Frame 40 liegen.
         double expectedMinStart = (45.0 - 6.0) / sampleRate;
-        assertTrue(window[0] >= expectedMinStart, "Start-Gating hat unbegründet zu früh angeschlagen");
+        assertTrue(window.startSeconds() >= expectedMinStart, "Start-Gating hat unbegründet zu früh angeschlagen");
 
         // Das Ende (Rückkehr zur Baseline < 5°) sollte um Frame 165 liegen
-        assertTrue(window[1] > (155.0 / sampleRate), "End-Gating hat die konzentrische Streckphase zu früh abgeschnitten");
-        assertTrue(window[1] <= (175.0 / sampleRate), "End-Gating hat den Übergang in den stabilen Stand verpasst");
+        assertTrue(window.endSeconds() > (155.0 / sampleRate), "End-Gating hat die konzentrische Streckphase zu früh abgeschnitten");
+        assertTrue(window.endSeconds() <= (175.0 / sampleRate), "End-Gating hat den Übergang in den stabilen Stand verpasst");
     }
 
     @Test
     @DisplayName("Should gracefully fall back to full file boundaries on insufficient data")
     void testFallbackScenarios() {
         // Fall 1: Übergabe von null fangen
-        double[] nullWindow = lllStrategy.findMovementWindowSeconds(null);
-        assertArrayEquals(new double[]{0.0, 0.0}, nullWindow);
+        MovementWindow nullWindow = lllStrategy.findMovementWindow(null);
+        assertEquals(new MovementWindow(0.0, 0.0, true), nullWindow);
 
         // Fall 2: Zu kurze Aufnahmedauer (weniger als 10 Frames)
         List<FrameData> shortList = new ArrayList<>();
         for (int i = 0; i < 7; i++) {
             shortList.add(new FrameData(i + 1, i * 0.1, new HashMap<>(), new HashMap<>()));
         }
-        double[] shortWindow = lllStrategy.findMovementWindowSeconds(shortList);
-        assertEquals(0.0, shortWindow[0]);
-        assertEquals(0.6, shortWindow[1], 0.0001);
+        MovementWindow shortWindow = lllStrategy.findMovementWindow(shortList);
+        assertTrue(shortWindow.fallbackUsed());
+        assertEquals(0.0, shortWindow.startSeconds());
+        assertEquals(0.6, shortWindow.endSeconds(), 0.0001);
 
         // Fall 3: Ausreichend Frames, aber der master-relevante Kanal KNEE_ANGLE_L fehlt komplett
         List<FrameData> missingChannelList = new ArrayList<>();
@@ -95,8 +96,9 @@ class LLLStrategyTest {
             angles.put(Joints.KNEE_ANGLE_R, 12.0); // Rechtes Knie nützt uns bei LLL nichts
             missingChannelList.add(new FrameData(i + 1, i * 0.02, new HashMap<>(), angles));
         }
-        double[] missingChannelWindow = lllStrategy.findMovementWindowSeconds(missingChannelList);
-        assertEquals(0.0, missingChannelWindow[0]);
-        assertEquals(49 * 0.02, missingChannelWindow[1], 0.0001);
+        MovementWindow missingChannelWindow = lllStrategy.findMovementWindow(missingChannelList);
+        assertTrue(missingChannelWindow.fallbackUsed());
+        assertEquals(0.0, missingChannelWindow.startSeconds());
+        assertEquals(49 * 0.02, missingChannelWindow.endSeconds(), 0.0001);
     }
 }

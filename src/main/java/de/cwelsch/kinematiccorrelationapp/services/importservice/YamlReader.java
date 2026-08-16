@@ -19,7 +19,8 @@ public class YamlReader {
 
     /**
      * Reads a YAML metadata file and deserializes it into a Participant domain model.
-     * * @param fullFilePath The absolute filesystem path string pointing to the target file.
+     *
+     * @param fullFilePath The absolute filesystem path string pointing to the target file.
      * @return A populated Participant entity instance, or null if deserialization fails.
      */
     public Participant readParticipant(String fullFilePath) {

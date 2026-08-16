@@ -14,11 +14,23 @@ import java.nio.file.Path;
 import java.util.*;
 import java.util.stream.Stream;
 
+/**
+ * Imports OpenCap/Theia motion capture file pairs from a folder and converts them into
+ * {@link Trial} instances with per-frame joint centers and joint angles. OpenCap and Theia
+ * files are matched by their base file name and expected to live in {@code opencap}/{@code theia}
+ * subfolders of the scanned directory.
+ */
 public class ImportService {
 
     private final String url;
     private final List<Trial> trialList;
 
+    /**
+     * Creates the import service and immediately imports all trial pairs found under {@code url}.
+     *
+     * @param url the path to the folder containing the {@code opencap}/{@code theia} subfolders
+     * @throws IOException if the folder or its files cannot be read
+     */
     public ImportService(String url) throws IOException {
         this.url = url;
         this.trialList = new ArrayList<>();
@@ -44,18 +56,21 @@ public class ImportService {
         }
 
         Map<String, Path> openCapFilesMap = new TreeMap<>();
-        Map<String, Path> theiaFilesMap   = new TreeMap<>();
+        Map<String, Path> theiaFilesMap = new TreeMap<>();
 
         try (Stream<Path> stream = Files.walk(movementFolder, 3)) {
             stream.filter(Files::isRegularFile)
                     .filter(p -> !p.getFileName().toString().startsWith("."))
-                    .filter(p -> p.toString().endsWith(".csv") || p.toString().endsWith(".mot") || p.toString().endsWith(".json"))
+                    .filter(p -> {
+                        String lowerName = p.getFileName().toString().toLowerCase();
+                        return lowerName.endsWith(".csv") || lowerName.endsWith(".mot") || lowerName.endsWith(".json");
+                    })
                     .forEach(p -> {
                         Path parentDir = p.getParent();
                         if (parentDir != null) {
                             String parentDirName = parentDir.getFileName().toString().toLowerCase();
-                            String fullFileName  = p.getFileName().toString().toLowerCase().trim();
-                            String baseNameKey   = fullFileName.substring(0, fullFileName.lastIndexOf('.'));
+                            String fullFileName = p.getFileName().toString().toLowerCase().trim();
+                            String baseNameKey = fullFileName.substring(0, fullFileName.lastIndexOf('.'));
 
                             if (parentDirName.equals("opencap")) {
                                 openCapFilesMap.put(baseNameKey, p);
@@ -80,13 +95,13 @@ public class ImportService {
 
         for (String baseNameKey : allBaseNames) {
             Path openCapFile = openCapFilesMap.get(baseNameKey);
-            Path theiaFile   = theiaFilesMap.get(baseNameKey);
+            Path theiaFile = theiaFilesMap.get(baseNameKey);
 
             if (openCapFile == null || theiaFile == null) {
                 System.err.printf("[Match-Error] Missing partner file for [%s]. OpenCap: %s, Theia: %s. Skipping!%n",
                         baseNameKey.toUpperCase(),
                         openCapFile != null ? "FOUND" : "MISSING",
-                        theiaFile   != null ? "FOUND" : "MISSING");
+                        theiaFile != null ? "FOUND" : "MISSING");
                 continue;
             }
 
@@ -129,13 +144,13 @@ public class ImportService {
         }
 
         Map<String, List<Double>> columns = motionData.getData();
-        List<Double> timeColumn  = null;
-        String actualTimeKey     = null;
+        List<Double> timeColumn = null;
+        String actualTimeKey = null;
 
         for (Map.Entry<String, List<Double>> entry : columns.entrySet()) {
             String lowerKey = entry.getKey().trim().toLowerCase();
             if (lowerKey.contains("time") || lowerKey.contains("frame") || lowerKey.contains("second")) {
-                timeColumn   = entry.getValue();
+                timeColumn = entry.getValue();
                 actualTimeKey = entry.getKey();
                 break;
             }
@@ -143,7 +158,7 @@ public class ImportService {
 
         if (timeColumn == null && !columns.isEmpty()) {
             String firstKey = columns.keySet().iterator().next();
-            timeColumn   = columns.get(firstKey);
+            timeColumn = columns.get(firstKey);
             actualTimeKey = firstKey;
         }
 
@@ -157,7 +172,7 @@ public class ImportService {
 
         for (int i = 0; i < totalFrames; i++) {
             Map<Joints, Point3D> jointCenters = new HashMap<>();
-            Map<Joints, Double>  jointAngles  = new HashMap<>();
+            Map<Joints, Double> jointAngles = new HashMap<>();
 
             if (isOpenCap) {
                 // OPENCAP: Gelenkwinkel liegen direkt als Spalten vor
@@ -182,12 +197,14 @@ public class ImportService {
                 }
 
                 // ── Schritt 2: Euler-Winkel direkt aus vorberechneten Parser-Spalten lesen ─
-                // Becken und LWS-Rotationen wurden im TheiaMarkerlessParser aus der
-                // Rotationsmatrix extrahiert und unter den OpenCap-kompatiblen Keys gespeichert.
+                // Becken- und LWS-Rotationen sowie Hüftflexion (rechts/links) wurden im
+                // TheiaMarkerlessParser aus vollen Rotationsmatrizen extrahiert (relative Rotation
+                // Becken->Oberschenkel für die Hüfte) und unter OpenCap-kompatiblen Keys gespeichert.
                 // PELVIS_TX/TY/TZ werden bewusst NICHT gelesen (Einheit: Meter, nicht Grad).
                 for (Joints joint : List.of(
-                        Joints.PELVIS_TILT,       Joints.PELVIS_LIST,     Joints.PELVIS_ROTATION,
-                        Joints.LUMBAR_EXTENSION,  Joints.LUMBAR_BENDING,  Joints.LUMBAR_ROTATION)) {
+                        Joints.PELVIS_TILT, Joints.PELVIS_LIST, Joints.PELVIS_ROTATION,
+                        Joints.LUMBAR_EXTENSION, Joints.LUMBAR_BENDING, Joints.LUMBAR_ROTATION,
+                        Joints.HIP_FLEXION_R, Joints.HIP_FLEXION_L)) {
                     // Direkter Key-Lookup auf der originalen columns-Map (case-sensitive, exakt wie Parser)
                     Double val = coords.get(joint.getOpenCapKey().toLowerCase().trim());
                     if (val != null && !val.isNaN()) {
@@ -208,44 +225,46 @@ public class ImportService {
                 }
 
                 // ── Schritt 4: Gelenkwinkel aus 3D-Koordinaten berechnen ─────────────────
-                Point3D pelvis = jointCenters.get(Joints.PELVIS_TILT);
+                // HINWEIS: HIP_FLEXION_R/L werden NICHT mehr hier aus einem 3-Punkte-Vektorwinkel
+                // berechnet (vermischte alle 3 Hüft-Freiheitsgrade) — siehe Schritt 2, wo der Wert
+                // jetzt aus der sauber zerlegten relativen Becken->Oberschenkel-Rotationsmatrix
+                // gelesen wird (siehe TheiaMarkerlessParser.computeRelativeFlexion).
 
                 // --- RECHTE UNTERE EXTREMITÄT ---
                 Point3D rThigh = jointCenters.get(Joints.HIP_FLEXION_R);
                 Point3D rShank = jointCenters.get(Joints.KNEE_ANGLE_R);
-                Point3D rFoot  = jointCenters.get(Joints.ANKLE_ANGLE_R);
-                Point3D rToes  = jointCenters.get(Joints.MTP_ANGLE_R);
+                Point3D rFoot = jointCenters.get(Joints.ANKLE_ANGLE_R);
+                Point3D rToes = jointCenters.get(Joints.MTP_ANGLE_R);
 
                 if (rThigh != null && rShank != null && rFoot != null) {
                     jointAngles.put(Joints.KNEE_ANGLE_R,
                             Math.abs(180.0 - Point3D.calculateAngle(rThigh.subtract(rShank), rFoot.subtract(rShank))));
                 }
-                if (pelvis != null && rThigh != null && rShank != null) {
-                    jointAngles.put(Joints.HIP_FLEXION_R,
-                            Math.abs(180.0 - Point3D.calculateAngle(pelvis.subtract(rThigh), rShank.subtract(rThigh))));
-                }
                 if (rShank != null && rFoot != null && rToes != null) {
+                    // CRITICAL FIX: KNEE_ANGLE/HIP_FLEXION dürfen Math.abs() behalten, weil ihr
+                    // Referenzpunkt (180°) am RAND des möglichen Wertebereichs von calculateAngle()
+                    // ([0°,180°]) liegt — abs() ist dort ein No-op. Der Sprunggelenk-Referenzpunkt
+                    // (90°) liegt dagegen MITTEN im Wertebereich, und echte Bewegungen (z.B. Squat)
+                    // durchqueren ihn: abs() faltete Dorsalflexion und Plantarflexion auf dieselbe
+                    // positive Kurve — die Kurve lief dadurch spiegelverkehrt zur signierten
+                    // OpenCap-Kurve (Tal statt Berg), empirisch an echten Squat-Daten bestätigt.
                     jointAngles.put(Joints.ANKLE_ANGLE_R,
-                            Math.abs(90.0 - Point3D.calculateAngle(rShank.subtract(rFoot), rToes.subtract(rFoot))));
+                            90.0 - Point3D.calculateAngle(rShank.subtract(rFoot), rToes.subtract(rFoot)));
                 }
 
                 // --- LINKE UNTERE EXTREMITÄT ---
                 Point3D lThigh = jointCenters.get(Joints.HIP_FLEXION_L);
                 Point3D lShank = jointCenters.get(Joints.KNEE_ANGLE_L);
-                Point3D lFoot  = jointCenters.get(Joints.ANKLE_ANGLE_L);
-                Point3D lToes  = jointCenters.get(Joints.MTP_ANGLE_L);
+                Point3D lFoot = jointCenters.get(Joints.ANKLE_ANGLE_L);
+                Point3D lToes = jointCenters.get(Joints.MTP_ANGLE_L);
 
                 if (lThigh != null && lShank != null && lFoot != null) {
                     jointAngles.put(Joints.KNEE_ANGLE_L,
                             Math.abs(180.0 - Point3D.calculateAngle(lThigh.subtract(lShank), lFoot.subtract(lShank))));
                 }
-                if (pelvis != null && lThigh != null && lShank != null) {
-                    jointAngles.put(Joints.HIP_FLEXION_L,
-                            Math.abs(180.0 - Point3D.calculateAngle(pelvis.subtract(lThigh), lShank.subtract(lThigh))));
-                }
                 if (lShank != null && lFoot != null && lToes != null) {
                     jointAngles.put(Joints.ANKLE_ANGLE_L,
-                            Math.abs(90.0 - Point3D.calculateAngle(lShank.subtract(lFoot), lToes.subtract(lFoot))));
+                            90.0 - Point3D.calculateAngle(lShank.subtract(lFoot), lToes.subtract(lFoot)));
                 }
 
                 // --- OBERE EXTREMITÄTEN ---

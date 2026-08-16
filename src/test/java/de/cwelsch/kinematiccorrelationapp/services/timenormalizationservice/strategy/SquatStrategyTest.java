@@ -58,21 +58,21 @@ class SquatStrategyTest {
         }
 
         // WHEN: Gating-Fenster berechnen
-        double[] window = squatStrategy.findMovementWindowSeconds(frames);
+        MovementWindow window = squatStrategy.findMovementWindow(frames);
 
         // THEN: Validierung des Fensters
         assertNotNull(window);
-        assertEquals(2, window.length);
-        assertTrue(window[0] >= 0.0, "Startzeitpunkt darf nicht negativ sein");
-        assertTrue(window[0] < window[1], "Start-Frame muss zeitlich vor dem End-Frame liegen");
+        assertFalse(window.fallbackUsed(), "Ein klar erkennbarer Squat darf nicht auf den Fallback zurückfallen");
+        assertTrue(window.startSeconds() >= 0.0, "Startzeitpunkt darf nicht negativ sein");
+        assertTrue(window.startSeconds() < window.endSeconds(), "Start-Frame muss zeitlich vor dem End-Frame liegen");
 
         // Der Start wird detektiert, sobald Knie > 5° UND Becken sinkt > 0.015m (kurz nach Frame 40)
         // Wegen des gewollten 5-Frame-Puffers nach vorne (40 - 5 = 35) erlauben wir Werte ab Frame 35
-        assertTrue(window[0] >= (35.0 / sampleRate), "Startzeitpunkt liegt zu weit vorne");
+        assertTrue(window.startSeconds() >= (35.0 / sampleRate), "Startzeitpunkt liegt zu weit vorne");
 
         // Das Ende wird detektiert, sobald Knie und Becken wieder nahe der Baseline sind (kurz vor Frame 150)
-        assertTrue(window[1] > (140.0 / sampleRate), "Endzeitpunkt hat die Aufwärtsbewegung zu früh abgeschnitten");
-        assertTrue(window[1] <= (155.0 / sampleRate), "Endzeitpunkt hat die Stabilisierungsphase nach dem Squat verpasst");
+        assertTrue(window.endSeconds() > (140.0 / sampleRate), "Endzeitpunkt hat die Aufwärtsbewegung zu früh abgeschnitten");
+        assertTrue(window.endSeconds() <= (155.0 / sampleRate), "Endzeitpunkt hat die Stabilisierungsphase nach dem Squat verpasst");
     }
 
     @Test
@@ -102,35 +102,36 @@ class SquatStrategyTest {
         }
 
         // WHEN: Gating-Fenster berechnen
-        double[] window = squatStrategy.findMovementWindowSeconds(frames);
+        MovementWindow window = squatStrategy.findMovementWindow(frames);
 
         // THEN: Validierung des reinen Knie-Zweigs
         assertNotNull(window);
-        assertEquals(2, window.length);
-        assertTrue(window[0] < window[1]);
+        assertFalse(window.fallbackUsed());
+        assertTrue(window.startSeconds() < window.endSeconds());
 
         // Start darf wegen des 5-Frame-Puffers ab Frame 30 liegen (35 - 5 = 30)
-        assertTrue(window[0] >= (30.0 / sampleRate), "Knie-Start-Gating zu früh angesprungen");
+        assertTrue(window.startSeconds() >= (30.0 / sampleRate), "Knie-Start-Gating zu früh angesprungen");
 
         // Ende sollte um Frame 145 detektiert werden
-        assertTrue(window[1] > (135.0 / sampleRate), "Knie-End-Gating hat die Extension zu früh beendet");
+        assertTrue(window.endSeconds() > (135.0 / sampleRate), "Knie-End-Gating hat die Extension zu früh beendet");
     }
 
     @Test
     @DisplayName("Should gracefully fall back to full file boundaries on insufficient data")
     void testFallbackScenarios() {
         // Fall 1: Null-Sicherheit
-        double[] nullWindow = squatStrategy.findMovementWindowSeconds(null);
-        assertArrayEquals(new double[]{0.0, 0.0}, nullWindow);
+        MovementWindow nullWindow = squatStrategy.findMovementWindow(null);
+        assertEquals(new MovementWindow(0.0, 0.0, true), nullWindow);
 
         // Fall 2: Zu kurze Datenreihe (weniger als 10 Frames)
         List<FrameData> shortList = new ArrayList<>();
         for (int i = 0; i < 6; i++) {
             shortList.add(new FrameData(i + 1, i * 0.1, new HashMap<>(), new HashMap<>()));
         }
-        double[] shortWindow = squatStrategy.findMovementWindowSeconds(shortList);
-        assertEquals(0.0, shortWindow[0]);
-        assertEquals(0.5, shortWindow[1], 0.0001);
+        MovementWindow shortWindow = squatStrategy.findMovementWindow(shortList);
+        assertTrue(shortWindow.fallbackUsed());
+        assertEquals(0.0, shortWindow.startSeconds());
+        assertEquals(0.5, shortWindow.endSeconds(), 0.0001);
 
         // Fall 3: Genug Frames, aber das zwingend erforderliche KNEE_ANGLE_R fehlt komplett
         List<FrameData> missingKneeList = new ArrayList<>();
@@ -139,8 +140,9 @@ class SquatStrategyTest {
             angles.put(Joints.PELVIS_TY, 1.0); // Becken da, aber kein Knie
             missingKneeList.add(new FrameData(i + 1, i * 0.02, new HashMap<>(), angles));
         }
-        double[] missingKneeWindow = squatStrategy.findMovementWindowSeconds(missingKneeList);
-        assertEquals(0.0, missingKneeWindow[0]);
-        assertEquals(39 * 0.02, missingKneeWindow[1], 0.0001);
+        MovementWindow missingKneeWindow = squatStrategy.findMovementWindow(missingKneeList);
+        assertTrue(missingKneeWindow.fallbackUsed());
+        assertEquals(0.0, missingKneeWindow.startSeconds());
+        assertEquals(39 * 0.02, missingKneeWindow.endSeconds(), 0.0001);
     }
 }

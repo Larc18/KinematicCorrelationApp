@@ -6,10 +6,10 @@ import java.util.*;
 /**
  * FrameData holds the information of a frame.
  *
- * @param frame count of the current frame.
- * @param second count of the current second.
+ * @param frame        count of the current frame.
+ * @param second       count of the current second.
  * @param jointCenters map of 3D-coordinates for every joint.
- * @param jointAngle map of angles for every joint.
+ * @param jointAngle   map of angles for every joint.
  */
 public record FrameData(int frame, double second, Map<Joints, Point3D> jointCenters, Map<Joints, Double> jointAngle) {
 

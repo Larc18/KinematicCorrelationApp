@@ -11,15 +11,18 @@ import java.util.Set;
 
 /**
  * Concrete validation service responsible for anatomical and physiological data sanity checking.
- * Evaluates motion capture frames for joint-range anomalies (e.g., knee hyperextension)
- * and handles signal tracking discontinuity indicators like high-frequency Gimbal locks and periodic angle flips.
+ * Evaluates motion capture frames for joint-range anomalies (e.g., knee hyperextension, hip
+ * hyperextension) within the study's analysis scope (Hüfte/Knie/Sprunggelenk).
  */
 public class BiomechanicalValidationService implements ValidationService<TrialSession> {
 
-    // Threshold catching abrupt frame-to-frame joint angular jumps exceeding realistic human motion constraints
-    private static final double MAX_ANGULAR_VELOCITY_PER_FRAME = 35.0;
-    private static final double ERROR_RELEASE_THRESHOLD = 5.0;
-
+    /**
+     * Checks every frame of every trial in the session for anatomically implausible knee and hip
+     * flexion angles, emitting one warning per contiguous out-of-bounds sequence (not per frame).
+     *
+     * @param trialSession the session whose trials are validated
+     * @return a report listing the biomechanical plausibility warnings found
+     */
     @Override
     public ValidationReport validate(TrialSession trialSession) {
         System.out.println("Starting BiomechanicalValidationService...");
@@ -40,9 +43,6 @@ public class BiomechanicalValidationService implements ValidationService<TrialSe
             // Tracking sets for cascading sequence errors (state locks preventing duplicate notifications)
             Set<Joints> activeKneeErrors = new HashSet<>();
             Set<Joints> activeHipErrors = new HashSet<>();
-            Set<Joints> activeGimbalErrors = new HashSet<>();
-
-            FrameData previousFrame = null;
 
             for (FrameData frame : frames) {
                 int frameNum = frame.frame();
@@ -53,13 +53,6 @@ public class BiomechanicalValidationService implements ValidationService<TrialSe
 
                 // Check 2: Hip flexion/extension plane alignment integrity
                 checkHipPlausibility(frame, report, fileName, frameNum, second, activeHipErrors);
-
-                // Check 3: Euler-angle kinematic discontinuities (Gimbal Lock detection on upper extremities)
-                if (previousFrame != null) {
-                    checkGimbalLockOrSignFlip(frame, previousFrame, report, fileName, frameNum, second, activeGimbalErrors);
-                }
-
-                previousFrame = frame;
             }
         }
 
@@ -117,44 +110,4 @@ public class BiomechanicalValidationService implements ValidationService<TrialSe
         }
     }
 
-    private void checkGimbalLockOrSignFlip(FrameData current, FrameData previous, ValidationReport report, String fileName, int frameNum, double second, Set<Joints> activeErrors) {
-        Joints[] upperJoints = {
-                Joints.ARM_FLEX_R, Joints.ARM_FLEX_L,
-                Joints.ARM_ROTATION_R, Joints.ARM_ROTATION_L,
-                Joints.ARM_ADDUCTION_R, Joints.ARM_ADDUCTION_L,
-                Joints.ELBOW_FLEX_R, Joints.ELBOW_FLEX_L,
-                Joints.PRO_SUP_R, Joints.PRO_SUP_L
-        };
-
-        for (Joints joint : upperJoints) {
-            Double currAngle = current.jointAngle().get(joint);
-            Double prevAngle = previous.jointAngle().get(joint);
-
-            if (currAngle != null && prevAngle != null && !Double.isNaN(currAngle) && !Double.isNaN(prevAngle)) {
-
-                // CRITICAL FIX: Periodischen Winkelsprung (Wrapping um 360°) korrigieren
-                double delta = currAngle - prevAngle;
-
-                // Normalisiere die Winkeldifferenz auf das Intervall [-180, 180]
-                while (delta > 180.0)  delta -= 360.0;
-                while (delta < -180.0) delta += 360.0;
-                delta = Math.abs(delta);
-
-                if (delta > MAX_ANGULAR_VELOCITY_PER_FRAME) {
-                    if (!activeErrors.contains(joint)) {
-                        report.addWarning(
-                                String.format("Potential Gimbal-Lock / coordinate system inversion detected at [%s] (Initial jump delta: %.2f°)", joint.name(), delta),
-                                fileName, frameNum, second
-                        );
-                        activeErrors.add(joint);
-                    }
-                } else {
-                    // Release the state lock once tracking noise stabilizes beneath constraints
-                    if (delta < ERROR_RELEASE_THRESHOLD) {
-                        activeErrors.remove(joint);
-                    }
-                }
-            }
-        }
-    }
 }

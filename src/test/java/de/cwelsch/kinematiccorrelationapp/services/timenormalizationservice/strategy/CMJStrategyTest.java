@@ -64,18 +64,18 @@ class CMJStrategyTest {
             frames.add(new FrameData(i + 1, timeInSeconds, centers, angles));
         }
 
-        double[] window = cmjStrategy.findMovementWindowSeconds(frames);
+        MovementWindow window = cmjStrategy.findMovementWindow(frames);
 
         assertNotNull(window);
-        assertEquals(2, window.length);
+        assertFalse(window.fallbackUsed(), "PELVIS_TY-Pfad muss ein echtes Fenster erkennen, kein Fallback");
 
         // Grundlegende Toleranzgrenzen prüfen
-        assertTrue(window[0] >= 0.0, "Startzeitpunkt darf nicht negativ sein");
-        assertTrue(window[0] < window[1], "Start-Frame muss vor dem End-Frame liegen");
+        assertTrue(window.startSeconds() >= 0.0, "Startzeitpunkt darf nicht negativ sein");
+        assertTrue(window.startSeconds() < window.endSeconds(), "Start-Frame muss vor dem End-Frame liegen");
 
         // Da das Becken bei der Landung sofort unter die Baseline sackt und erst bei Frame 140 wieder hochkommt,
         // findet die Strategie das Ende nun garantiert erst beim echten Auslaufen im Stand (nahe Frame 140)!
-        assertTrue(window[1] > (110.0 / sampleRate), "Endzeitpunkt (" + window[1] + "s) muss deutlich nach der Flugphase liegen");
+        assertTrue(window.endSeconds() > (110.0 / sampleRate), "Endzeitpunkt (" + window.endSeconds() + "s) muss deutlich nach der Flugphase liegen");
     }
 
     @Test
@@ -109,37 +109,39 @@ class CMJStrategyTest {
             frames.add(new FrameData(i + 1, timeInSeconds, centers, angles));
         }
 
-        double[] window = cmjStrategy.findMovementWindowSeconds(frames);
+        MovementWindow window = cmjStrategy.findMovementWindow(frames);
 
         assertNotNull(window);
-        assertEquals(2, window.length);
+        assertFalse(window.fallbackUsed(), "Ein klar erkennbarer CMJ darf nicht auf den Fallback zurückfallen");
 
         // Erlaube den gewollten 5-Frame-Puffer der Strategie nach vorne (30 - 5 = 25 Frames)
         double minAllowedStart = (30.0 - 6.0) / sampleRate;
-        assertTrue(window[0] >= minAllowedStart, "Gating darf nicht unbegründet vor der Ausholphase starten");
-        assertTrue(window[1] > (110.0 / sampleRate), "Gating muss das Abfangen der Landung mitnehmen");
+        assertTrue(window.startSeconds() >= minAllowedStart, "Gating darf nicht unbegründet vor der Ausholphase starten");
+        assertTrue(window.endSeconds() > (110.0 / sampleRate), "Gating muss das Abfangen der Landung mitnehmen");
     }
 
     @Test
     @DisplayName("Should gracefully fall back to full file boundaries on empty or insufficient inputs")
     void testFallbackScenarios() {
-        double[] nullWindow = cmjStrategy.findMovementWindowSeconds(null);
-        assertArrayEquals(new double[]{0.0, 0.0}, nullWindow);
+        MovementWindow nullWindow = cmjStrategy.findMovementWindow(null);
+        assertEquals(new MovementWindow(0.0, 0.0, true), nullWindow);
 
         List<FrameData> shortList = new ArrayList<>();
         for (int i = 0; i < 5; i++) {
             shortList.add(new FrameData(i + 1, i * 0.1, new HashMap<>(), new HashMap<>()));
         }
-        double[] shortWindow = cmjStrategy.findMovementWindowSeconds(shortList);
-        assertEquals(0.0, shortWindow[0]);
-        assertEquals(0.4, shortWindow[1], 0.0001);
+        MovementWindow shortWindow = cmjStrategy.findMovementWindow(shortList);
+        assertTrue(shortWindow.fallbackUsed());
+        assertEquals(0.0, shortWindow.startSeconds());
+        assertEquals(0.4, shortWindow.endSeconds(), 0.0001);
 
         List<FrameData> emptyChannelsList = new ArrayList<>();
         for (int i = 0; i < 50; i++) {
             emptyChannelsList.add(new FrameData(i + 1, i * 0.01, new HashMap<>(), new HashMap<>()));
         }
-        double[] emptyChannelsWindow = cmjStrategy.findMovementWindowSeconds(emptyChannelsList);
-        assertEquals(0.0, emptyChannelsWindow[0]);
-        assertEquals(0.49, emptyChannelsWindow[1], 0.0001);
+        MovementWindow emptyChannelsWindow = cmjStrategy.findMovementWindow(emptyChannelsList);
+        assertTrue(emptyChannelsWindow.fallbackUsed());
+        assertEquals(0.0, emptyChannelsWindow.startSeconds());
+        assertEquals(0.49, emptyChannelsWindow.endSeconds(), 0.0001);
     }
 }

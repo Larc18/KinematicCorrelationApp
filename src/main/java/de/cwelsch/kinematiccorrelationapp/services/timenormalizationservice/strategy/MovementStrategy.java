@@ -13,9 +13,10 @@ public interface MovementStrategy {
 
     /**
      * Analyzes a sequential frame track timeline to identify specific biomechanical events.
-     * * @param frames The sequential tracking data points collected during the trial recording.
-     * @return An integer array containing exactly two elements: index [0] represents the start frame,
-     * and index [1] represents the end frame of the active movement window phase.
+     *
+     * @param frames The sequential tracking data points collected during the trial recording.
+     * @return The detected movement window (start/end in seconds), flagged with whether
+     * detection had to fall back to using the entire trial recording.
      */
-    double[] findMovementWindowSeconds(List<FrameData> frames);  // gibt Sekunden zurück
+    MovementWindow findMovementWindow(List<FrameData> frames);
 }

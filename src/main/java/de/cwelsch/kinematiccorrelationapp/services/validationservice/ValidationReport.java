@@ -14,7 +14,8 @@ public class ValidationReport {
 
     /**
      * Convenience factory method for registering general pipeline execution errors.
-     * * @param message The root description of the failure.
+     *
+     * @param message The root description of the failure.
      */
     public void addError(String message) {
         errors.add(new ValidationMessage(message, "General", -1, -1.0));
@@ -22,6 +23,11 @@ public class ValidationReport {
 
     /**
      * Registers a targeted data integrity anomaly mapped to a specific timeline index.
+     *
+     * @param message     the description of the error
+     * @param fileName    the source file the error was found in
+     * @param frameNumber the frame index at which the error occurred
+     * @param second      the timestamp (in seconds) at which the error occurred
      */
     public void addError(String message, String fileName, int frameNumber, double second) {
         errors.add(new ValidationMessage(message, fileName, frameNumber, second));
@@ -29,7 +35,8 @@ public class ValidationReport {
 
     /**
      * Convenience factory method for registering global session warning markers.
-     * * @param message The root description of the warning threshold.
+     *
+     * @param message The root description of the warning threshold.
      */
     public void addWarning(String message) {
         warnings.add(new ValidationMessage(message, "General", -1, -1.0));
@@ -37,6 +44,11 @@ public class ValidationReport {
 
     /**
      * Registers a specific mathematical or biomechanical out-of-bounds warning.
+     *
+     * @param message     the description of the warning
+     * @param fileName    the source file the warning was found in
+     * @param frameNumber the frame index at which the warning occurred
+     * @param second      the timestamp (in seconds) at which the warning occurred
      */
     public void addWarning(String message, String fileName, int frameNumber, double second) {
         warnings.add(new ValidationMessage(message, fileName, frameNumber, second));
@@ -54,6 +66,11 @@ public class ValidationReport {
         return warnings;
     }
 
+    /**
+     * Renders this report as a human-readable, multi-line summary of all collected errors and warnings.
+     *
+     * @return the formatted report text
+     */
     @Override
     public String toString() {
         if (errors.isEmpty() && warnings.isEmpty()) {
@@ -92,10 +109,21 @@ public class ValidationReport {
             this.second = second;
         }
 
-        public String getMessage() { return message; }
-        public String getFileName() { return fileName; }
-        public int getFrameNumber() { return frameNumber; }
-        public double getSecond() { return second; }
+        public String getMessage() {
+            return message;
+        }
+
+        public String getFileName() {
+            return fileName;
+        }
+
+        public int getFrameNumber() {
+            return frameNumber;
+        }
+
+        public double getSecond() {
+            return second;
+        }
 
         @Override
         public String toString() {

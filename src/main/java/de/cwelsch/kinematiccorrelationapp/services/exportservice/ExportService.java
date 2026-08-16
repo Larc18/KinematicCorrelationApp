@@ -60,7 +60,7 @@ public class ExportService {
             for (Movement movement : Movement.values()) {
                 for (Joints joint : Joints.values()) {
 
-                    double[] iccArray  = finalResults.getIccForJoint(movement, joint);
+                    double[] iccArray = finalResults.getIccForJoint(movement, joint);
                     double[] rmseArray = finalResults.getRmseForJoint(movement, joint);
 
                     // Skip combinations without recorded tracking metrics

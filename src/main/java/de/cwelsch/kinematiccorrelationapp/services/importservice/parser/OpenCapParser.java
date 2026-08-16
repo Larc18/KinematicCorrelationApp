@@ -47,6 +47,14 @@ public class OpenCapParser implements Parser {
         }
     }
 
+    /**
+     * Parses an OpenCap {@code .mot} file, extracting the metadata header and the time-series
+     * joint angle columns, and applies the known 90°-offset harmonization to affected channels.
+     *
+     * @param filePath the path to the OpenCap {@code .mot} file to parse
+     * @return the parsed metadata and column data
+     * @throws IOException if the file does not exist or cannot be read
+     */
     @Override
     public MotionData parse(String filePath) throws IOException {
         if (filePath == null || filePath.trim().isEmpty()) {

@@ -34,20 +34,19 @@ public class CsvExportService {
             Movement.BECKEN_RUMPF_ROTATION
     );
 
-    private static final List<Joints> JOINT_ORDER = List.of(
-            Joints.PELVIS_TILT, Joints.PELVIS_LIST, Joints.PELVIS_ROTATION,
-            Joints.LUMBAR_ROTATION,
-            Joints.HIP_FLEXION_R, Joints.HIP_FLEXION_L,
-            Joints.KNEE_ANGLE_R, Joints.KNEE_ANGLE_L,
-            Joints.ANKLE_ANGLE_R, Joints.ANKLE_ANGLE_L
-    );
+    // Fachlicher Analyseumfang der Studie: nur Hüfte/Knie/Sprunggelenk, siehe Joints.ANALYSIS_SCOPE.
+    private static final List<Joints> JOINT_ORDER = Joints.ANALYSIS_SCOPE;
 
     public CsvExportService(String targetFolderURL) {
         this.targetFolderURL = targetFolderURL;
     }
 
     /**
-     * Exportiert die statistischen Gütekriterien direkt als CSV-Datei.
+     * Exports the aggregated quality metrics (ICC, RMSE, validity level, window-fallback ratio) as a CSV file.
+     *
+     * @param trialSessions      the participant sessions whose trials are evaluated for the fallback ratio
+     * @param statisticalResults the previously computed ICC/RMSE results per movement and joint
+     * @throws IOException if the CSV file cannot be written
      */
     public void exportAggregatedMetricsToCsv(List<TrialSession> trialSessions, AnalysisResults statisticalResults) throws IOException {
         String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss"));
@@ -57,20 +56,24 @@ public class CsvExportService {
         System.out.println("Starting Aggregated CsvExportService");
         System.out.println("Export destination: " + csvPath.toAbsolutePath());
 
-        // Präsenz-Map aufbauen wie im HTML-Export, um nur vorhandene Kombinationen zu exportieren
-        Map<Movement, Map<Joints, Boolean>> activeCombinations = new HashMap<>();
+        // Präsenz-Map aufbauen wie im HTML-Export, um nur vorhandene Kombinationen zu exportieren.
+        // Zählt zusätzlich mit, wie viele der beitragenden Trials auf die Fensterfallback-
+        // Erkennung zurückgefallen sind (siehe TimeNormalizationService/MovementWindow).
+        Map<Movement, Map<Joints, int[]>> activeCombinations = new HashMap<>(); // int[]{totalTrials, fallbackTrials}
 
         for (TrialSession session : trialSessions) {
             for (Trial trial : session.getTrials()) {
                 if (trial == null || trial.getMovement() == null) continue;
                 Movement mv = trial.getMovement();
 
-                for (Joints joint : Joints.values()) {
+                for (Joints joint : Joints.ANALYSIS_SCOPE) {
                     double[] normalized101 = trial.getNormalizedAngles(joint);
                     if (normalized101 != null && normalized101.length >= 101) {
-                        activeCombinations
+                        int[] counts = activeCombinations
                                 .computeIfAbsent(mv, k -> new HashMap<>())
-                                .put(joint, true);
+                                .computeIfAbsent(joint, k -> new int[2]);
+                        counts[0]++;
+                        if (trial.isWindowFallbackUsed()) counts[1]++;
                     }
                 }
             }
@@ -83,7 +86,8 @@ public class CsvExportService {
                     "Anatomischer_Gelenkwinkel",
                     "ICC_Mittelwert",
                     "RMSE_Grad",
-                    "Validitaetsstufe"
+                    "Validitaetsstufe",
+                    "Fenster_Fallback_Trials"
             ));
             writer.newLine();
 
@@ -95,25 +99,40 @@ public class CsvExportService {
                 for (Joints joint : JOINT_ORDER) {
                     if (!activeCombinations.get(mv).containsKey(joint)) continue;
 
-                    double[] iccArray  = statisticalResults.getIccForJoint(mv, joint);
+                    double[] iccArray = statisticalResults.getIccForJoint(mv, joint);
                     double[] rmseArray = statisticalResults.getRmseForJoint(mv, joint);
                     if (iccArray == null || rmseArray == null) continue;
 
-                    double aggregateIcc  = Arrays.stream(iccArray).filter(v -> !Double.isNaN(v)).summaryStatistics().getAverage();
-                    double aggregateRmse = Arrays.stream(rmseArray).filter(v -> !Double.isNaN(v)).summaryStatistics().getAverage();
+                    DoubleSummaryStatistics iccStats = Arrays.stream(iccArray).filter(v -> !Double.isNaN(v)).summaryStatistics();
+                    DoubleSummaryStatistics rmseStats = Arrays.stream(rmseArray).filter(v -> !Double.isNaN(v)).summaryStatistics();
+
+                    // CRITICAL FIX: Ein leerer Stream (alle 101 Punkte NaN, z.B. weil das Gelenk
+                    // überall zu viele fehlende Frames hatte) lieferte hier vorher getAverage()==0.0
+                    // -> täuschte fälschlich ein perfektes RMSE (0°) und ein katastrophales ICC (0.0)
+                    // vor, obwohl schlicht keine Daten vorlagen. Solche Zeilen werden jetzt übersprungen.
+                    if (iccStats.getCount() == 0 || rmseStats.getCount() == 0) continue;
+
+                    double aggregateIcc = iccStats.getAverage();
+                    double aggregateRmse = rmseStats.getAverage();
 
                     String validityText;
-                    if      (aggregateIcc >= 0.75) validityText = "Exzellent";
+                    if (aggregateIcc >= 0.75) validityText = "Exzellent";
                     else if (aggregateIcc >= 0.40) validityText = "Moderat";
-                    else                           validityText = "Mangelhaft";
+                    else validityText = "Mangelhaft";
+
+                    // (b) Sichtbarkeit der Fenster-Fallback-Quote: "2/8" bedeutet, dass 2 von 8
+                    // beitragenden Trials keine echte Bewegungsfenster-Erkennung erreicht haben.
+                    int[] counts = activeCombinations.get(mv).get(joint);
+                    String fallbackText = counts[1] + "/" + counts[0];
 
                     // Zeile mit deutscher Lokalisierung schreiben (Komma statt Punkt für deutsches Excel)
-                    String line = String.format(Locale.GERMAN, "%s%s%s%s%.4f%s%.2f%s%s",
+                    String line = String.format(Locale.GERMAN, "%s%s%s%s%.4f%s%.2f%s%s%s%s",
                             mv.name(), CSV_SEPARATOR,
                             joint.getDisplayName(), CSV_SEPARATOR,
                             aggregateIcc, CSV_SEPARATOR,
                             aggregateRmse, CSV_SEPARATOR,
-                            validityText
+                            validityText, CSV_SEPARATOR,
+                            fallbackText
                     );
 
                     writer.write(line);

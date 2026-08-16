@@ -8,12 +8,21 @@ import javafx.stage.Stage;
 import java.io.IOException;
 import java.net.URL;
 
+/**
+ * Entry point of the JavaFX application. Loads the main view and shows the primary stage.
+ */
 public class Main extends Application {
 
     // dimensions of the standard window
     private static final int WINDOW_WIDTH = 1280;
     private static final int WINDOW_HEIGHT = 720;
 
+    /**
+     * Loads {@code main-view.fxml}, builds the scene and shows the primary application window.
+     *
+     * @param stage the primary stage provided by the JavaFX runtime
+     * @throws IOException if the FXML file cannot be found or fails to load
+     */
     @Override
     public void start(Stage stage) throws IOException {
         URL fxmlLocation = Main.class.getResource("main-view.fxml");
@@ -35,6 +44,11 @@ public class Main extends Application {
         stage.show();
     }
 
+    /**
+     * Launches the JavaFX application.
+     *
+     * @param args command line arguments, forwarded to the JavaFX launcher
+     */
     public static void main(String[] args) {
         launch(args);
     }

@@ -25,15 +25,21 @@ import java.nio.file.Paths;
  */
 public class MainMenuController {
 
-    @FXML public VBox root;
-    @FXML public TabPane tabPane;
-    @FXML public VBox folderDropOff;
-    @FXML public Button beginAnalysisButton;
+    @FXML
+    public VBox root;
+    @FXML
+    public TabPane tabPane;
+    @FXML
+    public VBox folderDropOff;
+    @FXML
+    public Button beginAnalysisButton;
 
     private String folderURL;
 
     /**
      * Determines dragboard contents suitability and establishes standard file accept hooks.
+     *
+     * @param event the drag event carrying the dragboard being evaluated
      */
     @FXML
     public void handleDragOver(DragEvent event) {
@@ -45,6 +51,8 @@ public class MainMenuController {
 
     /**
      * Captures dropped operating system directory targets and maps paths to local configurations.
+     *
+     * @param event the drag event carrying the dropped files
      */
     @FXML
     public void handleDragDropped(DragEvent event) {
@@ -78,6 +86,9 @@ public class MainMenuController {
 
     /**
      * Loads a view layout instance dynamically inside a new dashboard tab wrapper for Theia data tracking.
+     *
+     * @param actionEvent the button action that triggered this preview
+     * @throws IOException if the preview FXML view fails to load
      */
     @FXML
     public void theiaMarkerlessPreview(ActionEvent actionEvent) throws IOException {
@@ -93,6 +104,9 @@ public class MainMenuController {
 
     /**
      * Loads a view layout instance dynamically inside a new dashboard tab wrapper for OpenCap data tracking.
+     *
+     * @param actionEvent the button action that triggered this preview
+     * @throws IOException if the preview FXML view fails to load
      */
     @FXML
     public void openCapPreview(ActionEvent actionEvent) throws IOException {
@@ -109,6 +123,8 @@ public class MainMenuController {
     /**
      * Boots up execution processes. Offloads expensive statistical and disk IO calculations onto a background
      * worker thread loop to keep the primary FX Application UI rendering cycle fully active and fluid.
+     *
+     * @param actionEvent the button action that triggered the analysis run
      */
     @FXML
     public void beginAnalysis(ActionEvent actionEvent) {

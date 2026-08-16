@@ -15,7 +15,8 @@ public class ParticipantBuilder {
 
     /**
      * Instantiates a new ParticipantBuilder configuration profile.
-     * * @param metaDataURL The filesystem path pointing to the sessionMetadata.yaml file.
+     *
+     * @param metaDataURL The filesystem path pointing to the sessionMetadata.yaml file.
      */
     public ParticipantBuilder(Path metaDataURL) {
         this.metaDataURL = metaDataURL;
@@ -23,7 +24,8 @@ public class ParticipantBuilder {
 
     /**
      * Executes the reading lifecycle and instantiates the Participant model entity.
-     * * @return A fully populated Participant object entity, or null if instantiation fails.
+     *
+     * @return A fully populated Participant object entity, or null if instantiation fails.
      */
     public Participant build() {
         // Validation boundary check before passing the path downstream

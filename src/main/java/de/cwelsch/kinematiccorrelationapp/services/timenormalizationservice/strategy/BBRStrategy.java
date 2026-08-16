@@ -14,9 +14,22 @@ import java.util.List;
 public class BBRStrategy implements MovementStrategy {
 
     private static final double ROM_ONSET_RATIO = 0.05; // 5% Schwellenwert der Rotations-Amplitude
+    // CRITICAL FIX: War vorher ein hartes "+20 Frames" — bei OpenCap (60Hz) 0,333s, bei Theia
+    // (85Hz) nur 0,235s, widerspricht der dokumentierten Framerate-Unabhängigkeit. Referenzwert
+    // 20/85s beibehalten, aber jetzt pro Trial in Frames umgerechnet (siehe CMJStrategy).
+    private static final double SECOND_PEAK_SEARCH_BUFFER_SECONDS = 20.0 / 85.0;
 
+    /**
+     * Detects the pelvis/trunk rotation movement window by isolating the first significant rotation
+     * excursion, locating the opposing second peak, and expanding to where the rotation angle returns
+     * within a 5%-of-ROM threshold of baseline. Falls back to the entire trial if no rotation joint
+     * data, sufficient amplitude, or plausible window boundary is found.
+     *
+     * @param frames the sequential tracking data points collected during the trial recording
+     * @return the detected movement window, or a fallback window covering the entire trial
+     */
     @Override
-    public double[] findMovementWindowSeconds(List<FrameData> frames) {
+    public MovementWindow findMovementWindow(List<FrameData> frames) {
         if (frames == null || frames.size() < 10) return fallback(frames);
 
         boolean hasPelvisRotation = frames.stream()
@@ -43,31 +56,61 @@ public class BBRStrategy implements MovementStrategy {
         }
         baselineRotation = validCount > 0 ? baselineRotation / validCount : 0.0;
 
-        // 2. Finde den absoluten Amplituden-Peak (entweder maximal ins Negative oder Positive)
-        int peakFrame = -1;
-        double maxAbsoluteDeviation = 0.0;
+        // 2. Globale Amplitude ermitteln, um den 5%-Schwellenwert für Start-/Endgating zu setzen.
+        double globalMaxAbsDeviation = 0.0;
+        for (FrameData frame : frames) {
+            Double rot = frame.jointAngle().get(rotationJoint);
+            if (rot != null && !Double.isNaN(rot)) {
+                globalMaxAbsDeviation = Math.max(globalMaxAbsDeviation, Math.abs(rot - baselineRotation));
+            }
+        }
+        if (globalMaxAbsDeviation < 5.0) {
+            return fallback(frames);
+        }
+        double thresholdDelta = globalMaxAbsDeviation * ROM_ONSET_RATIO;
+
+        // 3. BUGFIX: BRR ist eine Wechselkurve (neutral -> links -> rechts -> neutral) mit ZWEI
+        // Rotations-Peaks in entgegengesetzte Richtungen. Die vorherige Version suchte nur EINEN
+        // globalen Peak und lief von dort direkt vorwärts bis zur ersten Rückkehr Richtung Baseline
+        // — das ist aber genau der Nulldurchgang ZWISCHEN den beiden Peaks (Übergang von links- nach
+        // rechtsrotiert), nicht das Ende der Bewegung. Ergebnis: Die Gegenrotation wurde regelmäßig
+        // abgeschnitten (empirisch an echten Daten bestätigt: 40% der BRR-Trials fielen dadurch auf
+        // den Fallback zurück). Fix: zuerst die ERSTE signifikante Exkursion isolieren (nicht das
+        // globale Maximum, das könnte auch der zweite Peak sein), danach gezielt nach dem ZWEITEN,
+        // späteren Peak suchen und erst ab dort das Bewegungsende bestimmen.
+        int firstPeakFrame = -1;
+        double firstPeakDeviation = 0.0;
+        boolean inExcursion = false;
 
         for (int i = 0; i < frames.size(); i++) {
             Double rot = frames.get(i).jointAngle().get(rotationJoint);
-            if (rot != null && !Double.isNaN(rot)) {
-                double deviation = Math.abs(rot - baselineRotation);
-                if (deviation > maxAbsoluteDeviation) {
-                    maxAbsoluteDeviation = deviation;
-                    peakFrame = i;
+            if (rot == null || Double.isNaN(rot)) continue;
+            double deviation = Math.abs(rot - baselineRotation);
+
+            if (!inExcursion) {
+                if (deviation > thresholdDelta) {
+                    inExcursion = true;
+                    firstPeakDeviation = deviation;
+                    firstPeakFrame = i;
+                }
+            } else {
+                if (deviation > firstPeakDeviation) {
+                    firstPeakDeviation = deviation;
+                    firstPeakFrame = i;
+                }
+                if (deviation <= thresholdDelta) {
+                    break; // erste Exkursion beendet, Peak steht fest
                 }
             }
         }
 
-        if (peakFrame == -1 || maxAbsoluteDeviation < 5.0) {
+        if (firstPeakFrame == -1) {
             return fallback(frames);
         }
 
-        // 3. Berechne den 5%-Schwellenwert bezüglich der maximalen Rotations-Amplitude
-        double thresholdDelta = maxAbsoluteDeviation * ROM_ONSET_RATIO;
-
-        // 4. Startpunkt (Rückwärtssuche vom Peak bis zum Unterschreiten des Schwellenwerts)
+        // 4. Startpunkt (Rückwärtssuche vor dem ersten Peak)
         int startFrame = 0;
-        for (int i = peakFrame; i >= 0; i--) {
+        for (int i = firstPeakFrame; i >= 0; i--) {
             Double rot = frames.get(i).jointAngle().get(rotationJoint);
             if (rot != null && !Double.isNaN(rot) && Math.abs(rot - baselineRotation) <= thresholdDelta) {
                 startFrame = i;
@@ -75,9 +118,24 @@ public class BBRStrategy implements MovementStrategy {
             }
         }
 
-        // 5. Endpunkt (Vorwärtssuche nach der Gegenrotation bis zur Stabilisierung an der Baseline)
+        // 5. Zweiten (Gegen-)Peak suchen: erst danach darf die Rückkehr zur Baseline als Ende gelten.
+        int secondPeakFrame = firstPeakFrame;
+        double secondPeakDeviation = Double.NEGATIVE_INFINITY;
+
+        int searchStart = frameOffsetForBuffer(frames, firstPeakFrame);
+        for (int i = searchStart; i < frames.size(); i++) {
+            Double rot = frames.get(i).jointAngle().get(rotationJoint);
+            if (rot == null || Double.isNaN(rot)) continue;
+            double deviation = Math.abs(rot - baselineRotation);
+            if (deviation > secondPeakDeviation) {
+                secondPeakDeviation = deviation;
+                secondPeakFrame = i;
+            }
+        }
+
+        // 6. Endpunkt (Vorwärtssuche nach dem zweiten Peak bis zur Stabilisierung an der Baseline)
         int endFrame = frames.size() - 1;
-        for (int i = peakFrame; i < frames.size(); i++) {
+        for (int i = secondPeakFrame; i < frames.size(); i++) {
             Double rot = frames.get(i).jointAngle().get(rotationJoint);
             if (rot != null && !Double.isNaN(rot) && Math.abs(rot - baselineRotation) <= thresholdDelta) {
                 endFrame = i;
@@ -86,14 +144,27 @@ public class BBRStrategy implements MovementStrategy {
         }
 
         if (startFrame >= endFrame) return fallback(frames);
-        return new double[]{
+        return new MovementWindow(
                 frames.get(startFrame).second(),
-                frames.get(endFrame).second()
-        };
+                frames.get(endFrame).second(),
+                false
+        );
     }
 
-    private double[] fallback(List<FrameData> frames) {
-        if (frames == null || frames.isEmpty()) return new double[]{0.0, 0.0};
-        return new double[]{frames.get(0).second(), frames.get(frames.size() - 1).second()};
+    private MovementWindow fallback(List<FrameData> frames) {
+        if (frames == null || frames.isEmpty()) return new MovementWindow(0.0, 0.0, true);
+        return new MovementWindow(frames.get(0).second(), frames.get(frames.size() - 1).second(), true);
+    }
+
+    /**
+     * Wandelt SECOND_PEAK_SEARCH_BUFFER_SECONDS anhand der tatsächlichen Framerate DIESES Trials
+     * in eine Frame-Anzahl um, statt eine feste Frame-Anzahl (die je nach System unterschiedlich
+     * viel Zeit bedeutet) zu verwenden.
+     */
+    private int frameOffsetForBuffer(List<FrameData> frames, int fromIndex) {
+        double dt = (frames.size() > 1) ? (frames.get(1).second() - frames.get(0).second()) : (1.0 / 85.0);
+        if (dt <= 0) dt = 1.0 / 85.0;
+        int bufferFrames = Math.max(1, (int) Math.round(SECOND_PEAK_SEARCH_BUFFER_SECONDS / dt));
+        return Math.min(fromIndex + bufferFrames, frames.size() - 1);
     }
 }

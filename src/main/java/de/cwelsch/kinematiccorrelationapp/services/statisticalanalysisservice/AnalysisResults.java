@@ -20,10 +20,11 @@ public class AnalysisResults {
      * <p>
      * Note: Java records automatically generate optimal equals() and hashCode() methods natively.
      */
-    public record MovementJointKey(Movement movement, Joints joint) {}
+    public record MovementJointKey(Movement movement, Joints joint) {
+    }
 
-    private final Map<MovementJointKey, double[]> iccResults   = new HashMap<>();
-    private final Map<MovementJointKey, double[]> rmseResults  = new HashMap<>();
+    private final Map<MovementJointKey, double[]> iccResults = new HashMap<>();
+    private final Map<MovementJointKey, double[]> rmseResults = new HashMap<>();
     private final Map<MovementJointKey, double[]> nrmseResults = new HashMap<>();
 
     /**

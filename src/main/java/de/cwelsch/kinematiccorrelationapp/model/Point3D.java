@@ -20,6 +20,9 @@ public class Point3D {
 
     /**
      * Subtracts another point from this point, creating a direction vector.
+     *
+     * @param other the point to subtract from this point
+     * @return the resulting direction vector
      */
     public Point3D subtract(final Point3D other) {
         return new Point3D(this.x - other.x, this.y - other.y, this.z - other.z);
@@ -27,6 +30,9 @@ public class Point3D {
 
     /**
      * Adds another point to this point.
+     *
+     * @param other the point to add to this point
+     * @return the resulting point
      */
     public Point3D add(final Point3D other) {
         return new Point3D(this.x + other.x, this.y + other.y, this.z + other.z);
@@ -34,6 +40,9 @@ public class Point3D {
 
     /**
      * Calculates the dot product (Skalarprodukt) between this vector and another vector.
+     *
+     * @param other the other vector
+     * @return the scalar dot product of this vector and {@code other}
      */
     public double dotProduct(final Point3D other) {
         return (this.x * other.x) + (this.y * other.y) + (this.z * other.z);
@@ -41,6 +50,8 @@ public class Point3D {
 
     /**
      * Calculates the magnitude (length) of this vector.
+     *
+     * @return the Euclidean length of this vector
      */
     public double magnitude() {
         return Math.sqrt((this.x * this.x) + (this.y * this.y) + (this.z * this.z));
@@ -49,6 +60,10 @@ public class Point3D {
     /**
      * Calculates the enclosed angle in degrees between two vectors sharing the same origin.
      * Guarantees safe mathematical boundaries to prevent NaN results during arccos extraction.
+     *
+     * @param vector1 the first vector
+     * @param vector2 the second vector
+     * @return the enclosed angle between {@code vector1} and {@code vector2}, in degrees
      */
     public static double calculateAngle(Point3D vector1, Point3D vector2) {
         double mag1 = vector1.magnitude();
@@ -68,9 +83,17 @@ public class Point3D {
         return Math.toDegrees(Math.acos(cosTheta));
     }
 
-    public double getX() { return x; }
-    public double getY() { return y; }
-    public double getZ() { return z; }
+    public double getX() {
+        return x;
+    }
+
+    public double getY() {
+        return y;
+    }
+
+    public double getZ() {
+        return z;
+    }
 
     @Override
     public String toString() {

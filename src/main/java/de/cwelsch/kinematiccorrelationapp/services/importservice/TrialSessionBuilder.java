@@ -23,6 +23,13 @@ public class TrialSessionBuilder {
     private final Path rootFolder;
     private final List<TrialSession> trialSessions = new ArrayList<>();
 
+    /**
+     * Scans {@code rootFolderPath} for participant directories and builds a {@link TrialSession}
+     * for each participant that has at least one successfully paired movement trial.
+     *
+     * @param rootFolderPath the root folder containing one subdirectory per participant
+     * @throws IOException if the folder structure cannot be read
+     */
     public TrialSessionBuilder(String rootFolderPath) throws IOException {
         this.rootFolder = Path.of(rootFolderPath);
 
@@ -162,9 +169,10 @@ public class TrialSessionBuilder {
             return stream
                     .filter(Files::isRegularFile)
                     .filter(p -> !p.getFileName().toString().startsWith("."))
-                    .filter(p -> p.toString().endsWith(".csv") ||
-                            p.toString().endsWith(".mot") ||
-                            p.toString().endsWith(".json")) // FIX: .json erlauben!
+                    .filter(p -> {
+                        String lowerName = p.getFileName().toString().toLowerCase();
+                        return lowerName.endsWith(".csv") || lowerName.endsWith(".mot") || lowerName.endsWith(".json");
+                    })
                     .count();
         }
     }

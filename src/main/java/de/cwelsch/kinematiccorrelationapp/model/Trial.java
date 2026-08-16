@@ -16,6 +16,13 @@ public class Trial {
     private final boolean isOpenCap;
     private final Map<Joints, double[]> normalizedJointAngles = new HashMap<>();
 
+    /**
+     * Creates a new trial from the parsed frame data, deriving the {@link Movement} from the source file name.
+     *
+     * @param frameDataList  the ordered list of frames captured during this trial
+     * @param sourceFileName the name of the file the trial data was imported from
+     * @param isOpenCap      whether the trial was captured with the OpenCap system
+     */
     public Trial(List<FrameData> frameDataList, String sourceFileName, boolean isOpenCap) {
         this.frameDataList = new ArrayList<>(frameDataList);
         this.sourceFileName = sourceFileName;
@@ -52,9 +59,10 @@ public class Trial {
     }
 
     /**
-     * Wird vom TrialSessionBuilder gesetzt, wenn der Bewegungsname
-     * aus dem Ordnernamen stammt statt aus dem Dateinamen.
-     * Erkennt Ordnerstrukturen wie "01_SQT" und "05_BRR" fehlerfrei.
+     * Sets the movement based on a name supplied by the {@code TrialSessionBuilder}, used when the movement
+     * is derived from the containing folder name instead of the file name (e.g. folders like "01_SQT" or "05_BRR").
+     *
+     * @param movementName the raw movement name to interpret; if unrecognized, the current movement is kept
      */
     public void setMovementName(String movementName) {
         if (movementName == null) return;
@@ -109,14 +117,60 @@ public class Trial {
         return normalizedJointAngles;
     }
 
-    public boolean isOpenCap() { return isOpenCap; }
+    public boolean isOpenCap() {
+        return isOpenCap;
+    }
 
+    // --- Datenqualität: Ausschluss aus der Statistik bei kritischen Validierungsfehlern ---
+    private boolean excluded = false;
+    private String exclusionReason = null;
+
+    /**
+     * Marks this trial as excluded from further analysis (normalization, statistics, export).
+     * Called by the validation services when a critical validation error occurs.
+     * The reason of the first call is kept so the original cause remains traceable.
+     *
+     * @param reason a human-readable description of why the trial was excluded
+     */
+    public void markExcluded(String reason) {
+        this.excluded = true;
+        if (this.exclusionReason == null) {
+            this.exclusionReason = reason;
+        }
+    }
+
+    public boolean isExcluded() {
+        return excluded;
+    }
+
+    public String getExclusionReason() {
+        return exclusionReason;
+    }
+
+    // --- Bewegungsfenster-Erkennung: Kennzeichnet, ob die MovementStrategy auf den
+    //     kompletten Trial zurückfallen musste, statt ein echtes Bewegungsfenster zu erkennen ---
+    private boolean windowFallbackUsed = false;
+
+    public void setWindowFallbackUsed(boolean windowFallbackUsed) {
+        this.windowFallbackUsed = windowFallbackUsed;
+    }
+
+    public boolean isWindowFallbackUsed() {
+        return windowFallbackUsed;
+    }
+
+    /**
+     * Returns a compact, human-readable summary of this trial for logging and debugging.
+     *
+     * @return a formatted string with the source file, movement, frame count, normalized joint count and exclusion state
+     */
     @Override
     public String toString() {
-        return String.format("Trial { file='%s', movement=%s, frames=%d, normalizedJoints=%d }",
+        return String.format("Trial { file='%s', movement=%s, frames=%d, normalizedJoints=%d, excluded=%b }",
                 sourceFileName,
                 movement != null ? movement.name() : "unbekannt",
                 frameDataList.size(),
-                normalizedJointAngles.size());
+                normalizedJointAngles.size(),
+                excluded);
     }
 }
