@@ -13,6 +13,7 @@ import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * Advanced Biomechanical Export Service.
@@ -34,6 +35,11 @@ public class HtmlChartExportService {
 
     // Fachlicher Analyseumfang der Studie: nur Hüfte/Knie/Sprunggelenk, siehe Joints.ANALYSIS_SCOPE.
     private static final List<Joints> JOINT_ORDER = Joints.ANALYSIS_SCOPE;
+
+    // Klinischer Referenzwert für den geplanten Einstichproben-t-Test der Pro-Proband-RMSE
+    // (H0: mu >= 8° vs. H1: mu < 8°). Dient hier nur der informativen Einordnung der Werte im
+    // Export, die eigentliche Testberechnung erfolgt extern (R/Python).
+    private static final double REFERENCE_THRESHOLD_DEGREES = 8.0;
 
     public HtmlChartExportService(String targetFolderURL) {
         this.targetFolderURL = targetFolderURL;
@@ -126,9 +132,17 @@ public class HtmlChartExportService {
             writer.write("<div class=\"subtitle\">Validierungsstudie: OpenCap vs. Laborreferenz (Theia) | Berichtsstand: "
                     + dateStr + " | Geladene Sessions: " + trialSessions.size() + "</div>");
 
-            // ================= STAGE 1: TABELLE (STRICKTE REIHENFOLGE + NRMSE) =================
+            // ================= STAGE 1: TABELLE (STRICKTE REIHENFOLGE + NRMSE + BIAS) =================
             writer.write("""
                             <h2>1. Mittlere statistische Gütekriterien (Gesamtbewegung)</h2>
+                            <div class="chart-meta" style="margin-bottom:15px;">
+                                Bias = mittlere signierte Differenz (OpenCap &minus; Theia) über den normierten
+                                Bewegungszyklus, über die Probanden gemittelt. Ein positiver Bias bedeutet:
+                                OpenCap liegt systematisch höher als Theia. Der zentrierte RMSE ist der RMSE
+                                nach Abzug dieses konstanten Versatzes
+                                (RMSE<sub>zentriert</sub>² = RMSE² &minus; Bias²) und beschreibt daher nur noch
+                                die Abweichung im Kurvenverlauf.
+                            </div>
                             <table>
                                 <thead>
                                     <tr>
@@ -136,6 +150,8 @@ public class HtmlChartExportService {
                                         <th>Anatomischer Gelenkwinkel</th>
                                         <th>ICC (Mittelwert)</th>
                                         <th>RMSE (Mittelwert)</th>
+                                        <th>Bias (Mittelwert)</th>
+                                        <th>RMSE zentriert (Mittelwert)</th>
                                         <th>NRMSE (Mittelwert)</th>
                                         <th>Validitätsstufe</th>
                                         <th>Fenster-Fallback</th>
@@ -170,6 +186,12 @@ public class HtmlChartExportService {
                     double aggregateRmse = rmseStats.getAverage();
                     double aggregateNrmse = (nrmseArray != null) ? Arrays.stream(nrmseArray).filter(v -> !Double.isNaN(v)).summaryStatistics().getAverage() : 0.0;
 
+                    // Bias/zentrierter RMSE sind Skalare (pro Proband über die Zeitachse gebildet,
+                    // dann über die Kohorte gemittelt) und können fehlen, wenn für diese
+                    // Movement/Joint-Kombination kein gematchtes OpenCap/Theia-Kurvenpaar vorlag.
+                    String biasText = formatSignedDegrees(statisticalResults.getBiasForJoint(mv, joint));
+                    String rmseCenteredText = formatDegrees(statisticalResults.getRmseCenteredForJoint(mv, joint));
+
                     String badge;
                     if (aggregateIcc >= 0.75) badge = "<span class=\"badge badge-good\">Exzellent</span>";
                     else if (aggregateIcc >= 0.40) badge = "<span class=\"badge badge-acceptable\">Moderat</span>";
@@ -191,17 +213,26 @@ public class HtmlChartExportService {
                                             <td>%s</td>
                                             <td>%.4f</td>
                                             <td>%.2f°</td>
+                                            <td>%s</td>
+                                            <td>%s</td>
                                             <td>%.1f%%</td>
                                             <td>%s</td>
                                             <td>%s</td>
                                         </tr>
-                            """, mv.name(), joint.getDisplayName(), aggregateIcc, aggregateRmse, aggregateNrmse, badge, fallbackBadge));
+                            """, mv.name(), joint.getDisplayName(), aggregateIcc, aggregateRmse,
+                            biasText, rmseCenteredText, aggregateNrmse, badge, fallbackBadge));
                 }
             }
             writer.write("</tbody></table>");
 
-            // ================= STAGE 2: TRAJEKTORIEN (STRIKTE REIHENFOLGE) =================
-            writer.write("<h2>2. Parallele Gelenkwinkel-Trajektorien im inter-systemischen Vergleich</h2>");
+            // ================= STAGE 2: PRO-PROBAND RMSE/BIAS (BASIS FÜR EINSTICHPROBEN-T-TEST) =================
+            writePerParticipantRmseSection(writer,
+                    statisticalResults.getPerParticipantMeanRmse(),
+                    statisticalResults.getPerParticipantMeanBias(),
+                    statisticalResults.getPerParticipantMeanRmseCentered());
+
+            // ================= STAGE 3: TRAJEKTORIEN (STRIKTE REIHENFOLGE) =================
+            writer.write("<h2>3. Parallele Gelenkwinkel-Trajektorien im inter-systemischen Vergleich</h2>");
 
             // Äußere Grafiken-Schleife über die fixierte Bewegungsreihenfolge
             for (Movement mv : MOVEMENT_ORDER) {
@@ -359,6 +390,173 @@ public class HtmlChartExportService {
             System.out.println("Export completed successfully.");
             System.out.println("========================================");
         }
+    }
+
+    /**
+     * Schreibt eine eigenständige Sektion mit genau EINEM RMSE-, Bias- und zentrierten RMSE-Wert
+     * PRO PROBAND (jeweils gemittelt über alle Bewegungen/Gelenke), inklusive Zusammenfassung
+     * (n, Mittelwert, SD) und kopierbaren Wertelisten. Das ist die Datengrundlage für
+     * Einstichproben-t-Tests (RMSE gegen einen fixen Referenzwert, Bias gegen 0) — im Gegensatz zu
+     * Tabelle 1, die punktweise über die Kohorte gemittelte 101-Punkte-Kurven je Movement/Joint zeigt.
+     */
+    private void writePerParticipantRmseSection(BufferedWriter writer,
+                                                Map<String, Double> perParticipantMeanRmse,
+                                                Map<String, Double> perParticipantMeanBias,
+                                                Map<String, Double> perParticipantMeanRmseCentered) throws IOException {
+        if (perParticipantMeanRmse == null || perParticipantMeanRmse.isEmpty()) {
+            return;
+        }
+
+        Map<String, Double> biasByParticipant = (perParticipantMeanBias != null) ? perParticipantMeanBias : Map.of();
+        Map<String, Double> rmseCenteredByParticipant = (perParticipantMeanRmseCentered != null) ? perParticipantMeanRmseCentered : Map.of();
+
+        List<String> sortedParticipantIds = new ArrayList<>(perParticipantMeanRmse.keySet());
+        Collections.sort(sortedParticipantIds);
+
+        DoubleSummaryStatistics stats = perParticipantMeanRmse.values().stream()
+                .mapToDouble(Double::doubleValue)
+                .summaryStatistics();
+        int n = (int) stats.getCount();
+        double mean = stats.getAverage();
+        double variance = perParticipantMeanRmse.values().stream()
+                .mapToDouble(v -> (v - mean) * (v - mean))
+                .sum() / Math.max(1, n - 1);
+        double sd = Math.sqrt(variance);
+        long belowThreshold = perParticipantMeanRmse.values().stream()
+                .filter(v -> v < REFERENCE_THRESHOLD_DEGREES)
+                .count();
+
+        writer.write("""
+                        <h2>2. Pro-Proband RMSE und Bias (Basis für Einstichproben-t-Test)</h2>
+                        <div class="chart-meta" style="margin-bottom:15px;">
+                            Je ein RMSE-, Bias- und zentrierter RMSE-Wert pro Proband, gemittelt über alle
+                            Bewegungen und Gelenke &mdash; geeignet als unabhängige Stichprobe für einen
+                            Einstichproben-t-Test gegen einen fixen Referenzwert (z.B. H0: &mu; &ge; 8&deg;
+                            vs. H1: &mu; &lt; 8&deg;) bzw. für einen Test des Bias gegen &mu; = 0
+                            (Frage: besteht ein systematischer Versatz zwischen den Systemen?).
+                        </div>
+                """);
+
+        writer.write(String.format(Locale.GERMAN, """
+                        <table>
+                            <thead><tr><th>Kennzahl</th><th>Wert</th></tr></thead>
+                            <tbody>
+                                <tr><td>Anzahl Probanden (n)</td><td>%d</td></tr>
+                                <tr><td>Mittelwert RMSE</td><td>%.2f&deg;</td></tr>
+                                <tr><td>Standardabweichung (SD) RMSE</td><td>%.2f&deg;</td></tr>
+                                <tr><td>Probanden &lt; %.0f&deg;</td><td>%d von %d</td></tr>
+                                <tr><td>Mittelwert Bias (OpenCap &minus; Theia)</td><td>%s</td></tr>
+                                <tr><td>Standardabweichung (SD) Bias</td><td>%s</td></tr>
+                                <tr><td>Mittelwert RMSE zentriert (ohne Versatz)</td><td>%s</td></tr>
+                                <tr><td>Standardabweichung (SD) RMSE zentriert</td><td>%s</td></tr>
+                            </tbody>
+                        </table>
+                """, n, mean, sd, REFERENCE_THRESHOLD_DEGREES, belowThreshold, n,
+                formatSignedDegrees(meanOf(biasByParticipant)), formatDegrees(sdOf(biasByParticipant)),
+                formatDegrees(meanOf(rmseCenteredByParticipant)), formatDegrees(sdOf(rmseCenteredByParticipant))));
+
+        writer.write("""
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Proband-ID</th>
+                                    <th>Mittlerer RMSE (über alle Bewegungen/Gelenke)</th>
+                                    <th>Mittlerer Bias (OpenCap &minus; Theia)</th>
+                                    <th>Mittlerer RMSE zentriert (ohne Versatz)</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                """);
+        for (String participantId : sortedParticipantIds) {
+            double value = perParticipantMeanRmse.get(participantId);
+            writer.write(String.format(Locale.GERMAN, """
+                                <tr><td>%s</td><td>%.2f&deg;</td><td>%s</td><td>%s</td></tr>
+                    """, escapeHtml(participantId), value,
+                    formatSignedDegrees(biasByParticipant.get(participantId)),
+                    formatDegrees(rmseCenteredByParticipant.get(participantId))));
+        }
+        writer.write("</tbody></table>");
+
+        writer.write("<div class=\"chart-meta\">RMSE-Werteliste (kopierbar, Punkt als Dezimaltrennzeichen): "
+                + escapeHtml(toCopyableValueList(sortedParticipantIds, perParticipantMeanRmse)) + "</div>");
+        writer.write("<div class=\"chart-meta\">Bias-Werteliste (kopierbar, Punkt als Dezimaltrennzeichen): "
+                + escapeHtml(toCopyableValueList(sortedParticipantIds, biasByParticipant)) + "</div>");
+        writer.write("<div class=\"chart-meta\">Zentrierte RMSE-Werteliste (kopierbar, Punkt als Dezimaltrennzeichen): "
+                + escapeHtml(toCopyableValueList(sortedParticipantIds, rmseCenteredByParticipant)) + "</div>");
+    }
+
+    /**
+     * Baut eine kopierbare Werteliste in derselben Probandenreihenfolge wie die Tabelle, damit
+     * RMSE-, Bias- und zentrierte RMSE-Liste zeilenweise zueinander passen. Fehlt für einen
+     * Probanden ein Wert, steht an dieser Position "NA" statt eines stillschweigend verschobenen
+     * Wertes (R/Python lesen "NA" als fehlenden Wert statt als 0).
+     */
+    private String toCopyableValueList(List<String> participantIds, Map<String, Double> valuesByParticipant) {
+        return participantIds.stream()
+                .map(id -> {
+                    Double value = valuesByParticipant.get(id);
+                    return (value == null || Double.isNaN(value)) ? "NA" : String.format(Locale.US, "%.4f", value);
+                })
+                .collect(Collectors.joining(", "));
+    }
+
+    /**
+     * Mittelwert über die vorhandenen (nicht-NaN) Werte einer Pro-Proband-Map, oder NaN wenn keine
+     * Werte vorliegen.
+     */
+    private double meanOf(Map<String, Double> valuesByParticipant) {
+        return valuesByParticipant.values().stream()
+                .filter(v -> v != null && !Double.isNaN(v))
+                .mapToDouble(Double::doubleValue)
+                .average()
+                .orElse(Double.NaN);
+    }
+
+    /**
+     * Stichproben-Standardabweichung (n-1) über die vorhandenen Werte einer Pro-Proband-Map,
+     * oder NaN wenn weniger als zwei Werte vorliegen.
+     */
+    private double sdOf(Map<String, Double> valuesByParticipant) {
+        List<Double> values = valuesByParticipant.values().stream()
+                .filter(v -> v != null && !Double.isNaN(v))
+                .toList();
+        if (values.size() < 2) return Double.NaN;
+
+        double mean = values.stream().mapToDouble(Double::doubleValue).average().orElse(Double.NaN);
+        double sumSq = values.stream().mapToDouble(v -> (v - mean) * (v - mean)).sum();
+        return Math.sqrt(sumSq / (values.size() - 1));
+    }
+
+    /**
+     * Formatiert einen Gradwert für die Tabellenausgabe. Fehlende Werte (null/NaN) werden als
+     * Gedankenstrich dargestellt statt als 0&deg;, das fälschlich perfekte Übereinstimmung suggerieren würde.
+     */
+    private String formatDegrees(Double value) {
+        if (value == null || Double.isNaN(value)) return "&ndash;";
+        return String.format(Locale.GERMAN, "%.2f&deg;", value);
+    }
+
+    /**
+     * Wie {@link #formatDegrees(Double)}, erzwingt aber ein explizites Vorzeichen. Beim Bias ist die
+     * Richtung des Versatzes die eigentliche Information: + bedeutet OpenCap &gt; Theia.
+     */
+    private String formatSignedDegrees(Double value) {
+        if (value == null || Double.isNaN(value)) return "&ndash;";
+        return String.format(Locale.GERMAN, "%+.2f&deg;", value);
+    }
+
+    /**
+     * Minimalistisches HTML-Escaping für aus Studiendaten stammende Freitextfelder (z.B.
+     * Proband-IDs aus importierten JSON-Dateien), um versehentliches Markup-Einschleusen in den
+     * generierten Export zu verhindern.
+     */
+    private String escapeHtml(String value) {
+        return value
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&#39;");
     }
 
     private double[] calculateMeanVector(List<double[]> vectors) {

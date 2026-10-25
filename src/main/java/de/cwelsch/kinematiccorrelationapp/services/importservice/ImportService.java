@@ -185,31 +185,50 @@ public class ImportService {
         int totalFrames = timeColumn.size();
         List<FrameData> frames = new ArrayList<>(totalFrames);
 
+        // PERFORMANCE FIX: Spalten-Zuordnung (Column->Joint für OpenCap, lowercase-Key-Lookup für
+        // Theia) wurde vorher für JEDEN einzelnen Frame neu aufgebaut (mapColumnToJoint()-Aufrufe
+        // bzw. eine komplette "coords"-HashMap mit toLowerCase()/trim() auf jedem Spaltennamen) statt
+        // einmalig VOR der Frame-Schleife. Die Spaltennamen ändern sich zwischen Frames nicht — bei
+        // Trials mit tausenden Frames und vielen Spalten (v.a. Theia mit ~30 Segmenten x XYZ +
+        // Rotationskanälen) summierte sich diese O(Frames x Spalten) String-/HashMap-Arbeit spürbar
+        // auf. Jetzt einmalig vorberechnet, in der Frame-Schleife nur noch direkte List-Zugriffe.
+        Map<Joints, List<Double>> openCapJointColumns = null;
+        Map<String, List<Double>> theiaLowerCaseColumns = null;
+
+        if (isOpenCap) {
+            openCapJointColumns = new HashMap<>();
+            for (Map.Entry<String, List<Double>> column : columns.entrySet()) {
+                String columnName = column.getKey();
+                if (columnName.equals(actualTimeKey)) continue;
+                Joints joint = mapColumnToJoint(columnName);
+                if (joint != null) {
+                    openCapJointColumns.put(joint, column.getValue());
+                }
+            }
+        } else {
+            theiaLowerCaseColumns = new HashMap<>();
+            for (Map.Entry<String, List<Double>> column : columns.entrySet()) {
+                theiaLowerCaseColumns.put(column.getKey().toLowerCase().trim(), column.getValue());
+            }
+        }
+
         for (int i = 0; i < totalFrames; i++) {
             Map<Joints, Point3D> jointCenters = new HashMap<>();
             Map<Joints, Double> jointAngles = new HashMap<>();
 
             if (isOpenCap) {
                 // OPENCAP: Gelenkwinkel liegen direkt als Spalten vor
-                for (Map.Entry<String, List<Double>> column : columns.entrySet()) {
-                    String columnName = column.getKey();
-                    if (columnName.equals(actualTimeKey)) continue;
-                    Joints joint = mapColumnToJoint(columnName);
-                    if (joint != null && i < column.getValue().size()) {
-                        jointAngles.put(joint, column.getValue().get(i));
+                for (Map.Entry<Joints, List<Double>> entry : openCapJointColumns.entrySet()) {
+                    List<Double> values = entry.getValue();
+                    if (i < values.size()) {
+                        jointAngles.put(entry.getKey(), values.get(i));
                     }
                 }
 
             } else {
                 // THEIA MARKERLESS
-                // ── Schritt 1: Alle Spaltenwerte für Frame i flach einlesen ──────────────
-                Map<String, Double> coords = new HashMap<>();
-                for (Map.Entry<String, List<Double>> column : columns.entrySet()) {
-                    if (i < column.getValue().size()) {
-                        // Originalkey für direkte Suche behalten, lowercase für coords-Map
-                        coords.put(column.getKey().toLowerCase().trim(), column.getValue().get(i));
-                    }
-                }
+                final Map<String, List<Double>> coords = theiaLowerCaseColumns;
+                final int frameIndex = i;
 
                 // ── Schritt 2: Euler-Winkel direkt aus vorberechneten Parser-Spalten lesen ─
                 // Becken- und LWS-Rotationen sowie alle drei Hüft-Freiheitsgrade (rechts/links) wurden
@@ -227,7 +246,7 @@ public class ImportService {
                         Joints.HIP_ADDUCTION_R, Joints.HIP_ADDUCTION_L,
                         Joints.HIP_ROTATION_R, Joints.HIP_ROTATION_L)) {
                     // Direkter Key-Lookup auf der originalen columns-Map (case-sensitive, exakt wie Parser)
-                    Double val = coords.get(joint.getOpenCapKey().toLowerCase().trim());
+                    Double val = getValueAt(coords, joint.getOpenCapKey().toLowerCase().trim(), frameIndex);
                     if (val != null && !val.isNaN()) {
                         jointAngles.put(joint, val);
                     }
@@ -236,9 +255,9 @@ public class ImportService {
                 // ── Schritt 3: 3D-Koordinaten auf Joints mappen ──────────────────────────
                 for (Joints joint : Joints.values()) {
                     String key = joint.getTheiaKey().toLowerCase().trim();
-                    Double x = coords.get(key + "_x");
-                    Double y = coords.get(key + "_y");
-                    Double z = coords.get(key + "_z");
+                    Double x = getValueAt(coords, key + "_x", frameIndex);
+                    Double y = getValueAt(coords, key + "_y", frameIndex);
+                    Double z = getValueAt(coords, key + "_z", frameIndex);
                     if (x != null && y != null && z != null
                             && !x.isNaN() && !y.isNaN() && !z.isNaN()) {
                         jointCenters.put(joint, new Point3D(x, y, z));
@@ -291,9 +310,9 @@ public class ImportService {
                 }
 
                 // --- OBERE EXTREMITÄTEN ---
-                Double tx = coords.get("thorax_x");
-                Double ty = coords.get("thorax_y");
-                Double tz = coords.get("thorax_z");
+                Double tx = getValueAt(coords, "thorax_x", frameIndex);
+                Double ty = getValueAt(coords, "thorax_y", frameIndex);
+                Double tz = getValueAt(coords, "thorax_z", frameIndex);
                 Point3D thorax = (tx != null && ty != null && tz != null) ? new Point3D(tx, ty, tz) : null;
 
                 Point3D rUarm = jointCenters.get(Joints.ARM_FLEX_R);
@@ -327,6 +346,17 @@ public class ImportService {
         }
 
         return frames;
+    }
+
+    /**
+     * Liest den Wert einer vorab lowercase-geschlüsselten Theia-Spalte an Frame-Index {@code index},
+     * ohne für jeden Frame eine neue Lookup-Struktur aufzubauen. Liefert {@code null}, wenn die
+     * Spalte fehlt oder für diesen Frame keinen Wert hat — identisches Verhalten zur vorherigen
+     * Pro-Frame-"coords"-Map.
+     */
+    private Double getValueAt(Map<String, List<Double>> lowerCaseColumns, String key, int index) {
+        List<Double> values = lowerCaseColumns.get(key);
+        return (values != null && index < values.size()) ? values.get(index) : null;
     }
 
     private Joints mapColumnToJoint(String columnName) {

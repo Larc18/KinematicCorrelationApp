@@ -43,6 +43,7 @@ public class BiomechanicalValidationService implements ValidationService<TrialSe
             // Tracking sets for cascading sequence errors (state locks preventing duplicate notifications)
             Set<Joints> activeKneeErrors = new HashSet<>();
             Set<Joints> activeHipErrors = new HashSet<>();
+            Set<Joints> activeAnkleErrors = new HashSet<>();
 
             for (FrameData frame : frames) {
                 int frameNum = frame.frame();
@@ -53,6 +54,9 @@ public class BiomechanicalValidationService implements ValidationService<TrialSe
 
                 // Check 2: Hip flexion/extension plane alignment integrity
                 checkHipPlausibility(frame, report, fileName, frameNum, second, activeHipErrors);
+
+                // Check 3: Ankle dorsi-/plantarflexion plausibility analysis
+                checkAnklePlausibility(frame, report, fileName, frameNum, second, activeAnkleErrors);
             }
         }
 
@@ -105,6 +109,31 @@ public class BiomechanicalValidationService implements ValidationService<TrialSe
                     }
                 } else {
                     activeErrors.remove(hip);
+                }
+            }
+        }
+    }
+
+    private void checkAnklePlausibility(FrameData frame, ValidationReport report, String fileName, int frameNum, double second, Set<Joints> activeErrors) {
+        Joints[] ankles = {Joints.ANKLE_ANGLE_R, Joints.ANKLE_ANGLE_L};
+        for (Joints ankle : ankles) {
+            Double angle = frame.jointAngle().get(ankle);
+
+            // CRITICAL FIX: null UND NaN abfangen
+            if (angle != null && !Double.isNaN(angle)) {
+                // Biomechanical bounds: Plantarflexion beyond -60° or dorsiflexion beyond 35°
+                boolean isOutOfBounds = (angle < -60.0 || angle > 35.0);
+
+                if (isOutOfBounds) {
+                    if (!activeErrors.contains(ankle)) {
+                        report.addWarning(
+                                String.format("Anatomically implausible ankle angle detected at [%s]: %.2f° (Error cascade sequence initialized)", ankle.name(), angle),
+                                fileName, frameNum, second
+                        );
+                        activeErrors.add(ankle);
+                    }
+                } else {
+                    activeErrors.remove(ankle);
                 }
             }
         }
