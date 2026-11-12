@@ -25,7 +25,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Stream;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -78,16 +77,6 @@ class HtmlChartExportServiceTest {
         }
     }
 
-    private long countOccurrences(String text, String needle) {
-        long count = 0;
-        int idx = 0;
-        while ((idx = text.indexOf(needle, idx)) != -1) {
-            count++;
-            idx += needle.length();
-        }
-        return count;
-    }
-
     @Test
     @DisplayName("Should create a non-empty, well-formed HTML file")
     void testExport_CreatesNonEmptyHtmlFile() throws IOException {
@@ -112,7 +101,8 @@ class HtmlChartExportServiceTest {
         String html = readExportedHtml();
 
         assertTrue(html.contains("Rechtes Knie Flexion/Extension"));
-        assertTrue(html.contains("badge-good\">Exzellent</span>"));
+        assertTrue(html.contains("<td><strong>Squat</strong></td>"));
+        assertTrue(html.contains("<td>0,80</td>"));
     }
 
     @Test
@@ -127,43 +117,62 @@ class HtmlChartExportServiceTest {
         service.exportAggregatedDashboard(List.of(session), results);
         String html = readExportedHtml();
 
-        assertFalse(html.contains("Exzellent"), "Ohne OpenCap-Beitrag darf die Tabellenzeile nicht erscheinen (Gatekeeper ist openCapAggregates)");
+        assertFalse(html.contains("<td>Rechtes Knie Flexion/Extension</td>"), "Ohne OpenCap-Beitrag darf die Tabellenzeile nicht erscheinen (Gatekeeper ist openCapAggregates)");
     }
 
     @Test
-    @DisplayName("Should show no validity badges when statistical results are missing entirely")
-    void testExport_NoValidityBadges_WhenStatisticalResultsEmpty() throws IOException {
+    @DisplayName("Should not render a validity level column or validity badges")
+    void testExport_HasNoValidityLevel() throws IOException {
         Trial oc = trialWithNormalizedAngles("sqt_0001.mot", true, Joints.KNEE_ANGLE_R, constantArray(30.0), false);
         TrialSession session = sessionWith(oc);
 
-        service.exportAggregatedDashboard(List.of(session), new AnalysisResults());
+        AnalysisResults results = new AnalysisResults();
+        results.setResultsForJoint(Movement.SQUAT, Joints.KNEE_ANGLE_R, constantArray(0.8), constantArray(2.5), constantArray(5.0));
+
+        service.exportAggregatedDashboard(List.of(session), results);
         String html = readExportedHtml();
 
+        assertFalse(html.contains("Validitätsstufe"));
         assertFalse(html.contains("Exzellent"));
         assertFalse(html.contains("Moderat"));
         assertFalse(html.contains("Mangelhaft"));
     }
 
     @Test
-    @DisplayName("Should map ICC averages to the correct validity badge for each threshold")
-    void testExport_ValidityBadges_MatchIccThresholds() throws IOException {
-        Trial oc = new Trial(new ArrayList<>(), "sqt_0001.mot", true);
-        oc.setNormalizedAngles(Joints.HIP_FLEXION_R, constantArray(30.0));
-        oc.setNormalizedAngles(Joints.KNEE_ANGLE_R, constantArray(30.0));
-        oc.setNormalizedAngles(Joints.ANKLE_ANGLE_R, constantArray(30.0));
+    @DisplayName("Should place the hypothesis section with its tests before the metrics table and the charts")
+    void testExport_OrdersSections_AndRendersSignificanceTests() throws IOException {
+        Trial oc = trialWithNormalizedAngles("sqt_0001.mot", true, Joints.KNEE_ANGLE_R, constantArray(30.0), false);
         TrialSession session = sessionWith(oc);
 
         AnalysisResults results = new AnalysisResults();
-        results.setResultsForJoint(Movement.SQUAT, Joints.HIP_FLEXION_R, constantArray(0.9), constantArray(1.0), constantArray(0.0));
-        results.setResultsForJoint(Movement.SQUAT, Joints.KNEE_ANGLE_R, constantArray(0.5), constantArray(1.0), constantArray(0.0));
-        results.setResultsForJoint(Movement.SQUAT, Joints.ANKLE_ANGLE_R, constantArray(0.2), constantArray(1.0), constantArray(0.0));
+        results.setResultsForJoint(Movement.SQUAT, Joints.KNEE_ANGLE_R, constantArray(0.8), constantArray(2.5), constantArray(5.0));
+        results.setPerParticipantMeanRmse(new LinkedHashMap<>(Map.of(
+                "P01", 7.15, "P02", 10.53, "P03", 7.24, "P04", 17.52, "P05", 6.97, "P06", 9.25)));
 
         service.exportAggregatedDashboard(List.of(session), results);
         String html = readExportedHtml();
 
-        assertEquals(1, countOccurrences(html, "badge-good\">Exzellent</span>"));
-        assertEquals(1, countOccurrences(html, "badge-acceptable\">Moderat</span>"));
-        assertEquals(1, countOccurrences(html, "badge-poor\">Mangelhaft</span>"));
+        int hypothesis = html.indexOf("<h2>1. Prüfung der Forschungshypothese");
+        int metrics = html.indexOf("<h2>2. Mittlere statistische Gütekriterien");
+        int charts = html.indexOf("<h2>3. Parallele Gelenkwinkel-Trajektorien");
+        assertTrue(hypothesis >= 0 && hypothesis < metrics && metrics < charts);
+        assertTrue(html.contains("Shapiro-Wilk-Test auf Normalverteilung"));
+        assertTrue(html.contains("Median RMSE"));
+        assertTrue(html.contains("Sensitivitätsanalyse ohne P04"));
+    }
+
+    @Test
+    @DisplayName("Should count only trials with a matching OpenCap/Theia partner as evaluated pairs")
+    void testExport_CountsEvaluatedPairsPerMovement() throws IOException {
+        Trial oc1 = trialWithNormalizedAngles("sqt_0001.mot", true, Joints.KNEE_ANGLE_R, constantArray(30.0), false);
+        Trial th1 = trialWithNormalizedAngles("sqt_0001.json", false, Joints.KNEE_ANGLE_R, constantArray(30.0), false);
+        Trial ocWithoutPartner = trialWithNormalizedAngles("sqt_0002.mot", true, Joints.KNEE_ANGLE_R, constantArray(30.0), false);
+
+        service.exportAggregatedDashboard(List.of(sessionWith(oc1, th1, ocWithoutPartner)), new AnalysisResults());
+        String html = readExportedHtml();
+
+        assertTrue(html.contains("<tr><td><strong>Squat</strong></td><td>1</td><td>3</td><td>1 von 1</td></tr>"));
+        assertTrue(html.contains("<tr><td><strong>BRR</strong></td><td>0</td><td>3</td><td>0 von 1</td></tr>"));
     }
 
     @Test
@@ -224,8 +233,8 @@ class HtmlChartExportServiceTest {
         }
 
         assertTrue(csv.contains("0,8000"), "CSV muss auch unter Locale.US ein Komma verwenden");
-        assertTrue(html.contains("0,8000"), "HTML muss auch unter Locale.US ein Komma verwenden, konsistent zum CSV-Export");
-        assertFalse(html.contains("0.8000"), "HTML darf nicht der System-Locale folgen und einen Punkt verwenden");
+        assertTrue(html.contains("<td>0,80</td>"), "HTML muss auch unter Locale.US ein Komma verwenden, konsistent zum CSV-Export");
+        assertFalse(html.contains("<td>0.80</td>"), "HTML darf nicht der System-Locale folgen und einen Punkt verwenden");
     }
 
     @Test

@@ -210,8 +210,39 @@ class ImportServiceTest {
     }
 
     @Test
-    @DisplayName("Should derive KNEE_ANGLE_R and ANKLE_ANGLE_R from raw 3D joint centers for a Theia trial")
-    void testParseFrames_TheiaFile_DerivesKneeAndAnkleAngleFromJointCenters3D() throws IOException {
+    @DisplayName("Should read KNEE_ANGLE_R and ANKLE_ANGLE_R from the relative segment rotations by default")
+    void testParseFrames_TheiaFile_DefaultsToCardanKneeAndAnkleAngles() throws IOException {
+        writeFile("opencap", "sqt_0001.mot", minimalOpenCapContent());
+        // Oberschenkel = Identität, Unterschenkel = Rx(-90°), Fuß = Unterschenkel * Rx(20°) = Rx(-70°).
+        // Translationen sind so gewählt, dass die VECTOR-Variante andere Werte liefern würde.
+        writeFile("theia", "sqt_0001.json", """
+                {
+                  "trial": { "frame_rate": 85.0 },
+                  "data": {
+                    "subjects": [
+                      {
+                        "segments": [
+                          { "name": "r_thigh", "pose": [ [1,0,0,0, 0,1,0,1, 0,0,1,0, 0,0,0,1] ] },
+                          { "name": "r_shank", "pose": [ [1,0,0,0, 0,0,1,0, 0,-1,0,0, 0,0,0,1] ] },
+                          { "name": "r_foot",  "pose": [ [1,0,0,1, 0,0.34202014,0.93969262,0, 0,-0.93969262,0.34202014,0, 0,0,0,1] ] },
+                          { "name": "r_toes",  "pose": [ [1,0,0,1, 0,1,0,1, 0,0,1,0, 0,0,0,1] ] }
+                        ]
+                      }
+                    ]
+                  }
+                }
+                """);
+
+        ImportService service = new ImportService(tempDir.toString());
+        FrameData frame = service.getTrialList().get(1).getFrameDataList().get(0);
+
+        assertEquals(90.0, frame.jointAngle().get(Joints.KNEE_ANGLE_R), 1e-6);
+        assertEquals(20.0, frame.jointAngle().get(Joints.ANKLE_ANGLE_R), 1e-6);
+    }
+
+    @Test
+    @DisplayName("Should derive KNEE_ANGLE_R and ANKLE_ANGLE_R from raw 3D joint centers with AngleMethod.VECTOR")
+    void testParseFrames_TheiaFile_VectorMethod_DerivesKneeAndAnkleAngleFromJointCenters3D() throws IOException {
         writeFile("opencap", "sqt_0001.mot", minimalOpenCapContent());
         // Oberschenkel(0,1,0) - Knie(0,0,0) - Fuß(1,0,0) - Zehen(1,1,0): rein geometrisch konstruiert,
         // sodass sich Knie- und Sprunggelenkwinkel von Hand exakt nachrechnen lassen (siehe unten).
@@ -233,7 +264,7 @@ class ImportServiceTest {
                 }
                 """);
 
-        ImportService service = new ImportService(tempDir.toString());
+        ImportService service = new ImportService(tempDir.toString(), AngleMethod.VECTOR);
         Trial theiaTrial = service.getTrialList().get(1);
         assertNotNull(theiaTrial);
         assertFalse(theiaTrial.isOpenCap());

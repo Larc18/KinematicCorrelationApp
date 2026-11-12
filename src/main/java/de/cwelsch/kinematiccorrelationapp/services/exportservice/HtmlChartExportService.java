@@ -5,6 +5,7 @@ import de.cwelsch.kinematiccorrelationapp.model.TrialSession;
 import de.cwelsch.kinematiccorrelationapp.model.Joints;
 import de.cwelsch.kinematiccorrelationapp.model.Movement;
 import de.cwelsch.kinematiccorrelationapp.services.statisticalanalysisservice.AnalysisResults;
+import de.cwelsch.kinematiccorrelationapp.services.statisticalanalysisservice.ReferenceValueTest;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
@@ -36,10 +37,12 @@ public class HtmlChartExportService {
     // Fachlicher Analyseumfang der Studie: nur Hüfte/Knie/Sprunggelenk, siehe Joints.ANALYSIS_SCOPE.
     private static final List<Joints> JOINT_ORDER = Joints.ANALYSIS_SCOPE;
 
-    // Klinischer Referenzwert für den geplanten Einstichproben-t-Test der Pro-Proband-RMSE
-    // (H0: mu >= 8° vs. H1: mu < 8°). Dient hier nur der informativen Einordnung der Werte im
-    // Export, die eigentliche Testberechnung erfolgt extern (R/Python).
+    // Klinischer Referenzwert für die einseitige Prüfung der Pro-Proband-RMSE
+    // (H0: mu >= 8° vs. H1: mu < 8°).
     private static final double REFERENCE_THRESHOLD_DEGREES = 8.0;
+
+    // Laut Studienprotokoll drei Versuche je Proband und Bewegung.
+    private static final int PLANNED_TRIALS_PER_MOVEMENT = 3;
 
     public HtmlChartExportService(String targetFolderURL) {
         this.targetFolderURL = targetFolderURL;
@@ -116,7 +119,6 @@ public class HtmlChartExportService {
                             tr:hover { background-color: #f1f2f6; }
                             .badge { padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 0.9em; }
                             .badge-good { background-color: #2ecc71; color: white; }
-                            .badge-acceptable { background-color: #f1c40f; color: #2c3e50; }
                             .badge-poor { background-color: #e74c3c; color: white; }
                             .chart-section { background: white; padding: 25px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 40px; }
                             .chart-container { height: 400px; position: relative; margin-top: 15px; }
@@ -132,9 +134,20 @@ public class HtmlChartExportService {
             writer.write("<div class=\"subtitle\">Validierungsstudie: OpenCap vs. Laborreferenz (Theia) | Berichtsstand: "
                     + dateStr + " | Geladene Sessions: " + trialSessions.size() + "</div>");
 
-            // ================= STAGE 1: TABELLE (STRICKTE REIHENFOLGE + NRMSE + BIAS) =================
+            // ================= STAGE 1: PRO-PROBAND RMSE/BIAS UND HYPOTHESENPRÜFUNG =================
+            writePerParticipantRmseSection(writer,
+                    statisticalResults.getPerParticipantMeanRmse(),
+                    statisticalResults.getPerParticipantMeanBias(),
+                    statisticalResults.getPerParticipantMeanRmseCentered());
+
+            // ================= STAGE 2: TABELLE (STRICKTE REIHENFOLGE + NRMSE + BIAS) =================
             writer.write("""
-                            <h2>1. Mittlere statistische Gütekriterien (Gesamtbewegung)</h2>
+                            <h2>2. Mittlere statistische Gütekriterien je Bewegung und Gelenk (Tabelle 3)</h2>
+                    """);
+
+            writeEvaluatedPairsTable(writer, trialSessions);
+
+            writer.write("""
                             <div class="chart-meta" style="margin-bottom:15px;">
                                 Bias = mittlere signierte Differenz (OpenCap &minus; Theia) über den normierten
                                 Bewegungszyklus, über die Probanden gemittelt. Ein positiver Bias bedeutet:
@@ -153,7 +166,6 @@ public class HtmlChartExportService {
                                         <th>Bias (Mittelwert)</th>
                                         <th>RMSE zentriert (Mittelwert)</th>
                                         <th>NRMSE (Mittelwert)</th>
-                                        <th>Validitätsstufe</th>
                                         <th>Fenster-Fallback</th>
                                     </tr>
                                 </thead>
@@ -192,11 +204,6 @@ public class HtmlChartExportService {
                     String biasText = formatSignedDegrees(statisticalResults.getBiasForJoint(mv, joint));
                     String rmseCenteredText = formatDegrees(statisticalResults.getRmseCenteredForJoint(mv, joint));
 
-                    String badge;
-                    if (aggregateIcc >= 0.75) badge = "<span class=\"badge badge-good\">Exzellent</span>";
-                    else if (aggregateIcc >= 0.40) badge = "<span class=\"badge badge-acceptable\">Moderat</span>";
-                    else badge = "<span class=\"badge badge-poor\">Mangelhaft</span>";
-
                     // (b) Fenster-Fallback-Quote über beide Systeme hinweg sichtbar machen, statt
                     // sie stillschweigend in der Aggregation verschwinden zu lassen.
                     int[] ocCounts = openCapFallbackCounts.getOrDefault(mv, Map.of()).getOrDefault(joint, new int[2]);
@@ -211,25 +218,18 @@ public class HtmlChartExportService {
                                         <tr>
                                             <td><strong>%s</strong></td>
                                             <td>%s</td>
-                                            <td>%.4f</td>
+                                            <td>%.2f</td>
                                             <td>%.2f°</td>
                                             <td>%s</td>
                                             <td>%s</td>
                                             <td>%.1f%%</td>
                                             <td>%s</td>
-                                            <td>%s</td>
                                         </tr>
-                            """, mv.name(), joint.getDisplayName(), aggregateIcc, aggregateRmse,
-                            biasText, rmseCenteredText, aggregateNrmse, badge, fallbackBadge));
+                            """, movementLabel(mv), joint.getDisplayName(), aggregateIcc, aggregateRmse,
+                            biasText, rmseCenteredText, aggregateNrmse, fallbackBadge));
                 }
             }
             writer.write("</tbody></table>");
-
-            // ================= STAGE 2: PRO-PROBAND RMSE/BIAS (BASIS FÜR EINSTICHPROBEN-T-TEST) =================
-            writePerParticipantRmseSection(writer,
-                    statisticalResults.getPerParticipantMeanRmse(),
-                    statisticalResults.getPerParticipantMeanBias(),
-                    statisticalResults.getPerParticipantMeanRmseCentered());
 
             // ================= STAGE 3: TRAJEKTORIEN (STRIKTE REIHENFOLGE) =================
             writer.write("<h2>3. Parallele Gelenkwinkel-Trajektorien im inter-systemischen Vergleich</h2>");
@@ -279,7 +279,7 @@ public class HtmlChartExportService {
 
                     writer.write("<div class=\"chart-section\">");
                     writer.write("<h3 style='margin-top:0; border-bottom:1px solid #f1f2f6; padding-bottom:8px;'>"
-                            + mv.name() + " &mdash; " + joint.getDisplayName() + "</h3>");
+                            + movementLabel(mv) + " &mdash; " + joint.getDisplayName() + "</h3>");
                     writer.write("<div class=\"chart-container\"><canvas id=\"" + chartId + "\"></canvas></div>");
                     writer.write("<div class=\"chart-meta\">OpenCap: n=" + nOC + " Trials (Fallback: " + ocFallback[1] + "/" + ocFallback[0]
                             + ") &nbsp;|&nbsp; Theia: n=" + nTH + " Trials (Fallback: " + thFallback[1] + "/" + thFallback[0]
@@ -394,10 +394,9 @@ public class HtmlChartExportService {
 
     /**
      * Schreibt eine eigenständige Sektion mit genau EINEM RMSE-, Bias- und zentrierten RMSE-Wert
-     * PRO PROBAND (jeweils gemittelt über alle Bewegungen/Gelenke), inklusive Zusammenfassung
-     * (n, Mittelwert, SD) und kopierbaren Wertelisten. Das ist die Datengrundlage für
-     * Einstichproben-t-Tests (RMSE gegen einen fixen Referenzwert, Bias gegen 0) — im Gegensatz zu
-     * Tabelle 1, die punktweise über die Kohorte gemittelte 101-Punkte-Kurven je Movement/Joint zeigt.
+     * PRO PROBAND (jeweils gemittelt über alle Bewegungen/Gelenke), inklusive Zusammenfassung,
+     * Prüfung der Forschungshypothese und kopierbaren Wertelisten — im Gegensatz zur Tabelle der
+     * Gütekriterien, die punktweise über die Kohorte gemittelte 101-Punkte-Kurven je Movement/Joint zeigt.
      */
     private void writePerParticipantRmseSection(BufferedWriter writer,
                                                 Map<String, Double> perParticipantMeanRmse,
@@ -426,14 +425,18 @@ public class HtmlChartExportService {
                 .filter(v -> v < REFERENCE_THRESHOLD_DEGREES)
                 .count();
 
+        double[] sortedRmse = perParticipantMeanRmse.values().stream()
+                .mapToDouble(Double::doubleValue)
+                .sorted()
+                .toArray();
+        double median = (sortedRmse[(n - 1) / 2] + sortedRmse[n / 2]) / 2.0;
+
         writer.write("""
-                        <h2>2. Pro-Proband RMSE und Bias (Basis für Einstichproben-t-Test)</h2>
+                        <h2>1. Prüfung der Forschungshypothese: gemittelter RMSE je Proband (Kapitel 5.2)</h2>
                         <div class="chart-meta" style="margin-bottom:15px;">
                             Je ein RMSE-, Bias- und zentrierter RMSE-Wert pro Proband, gemittelt über alle
-                            Bewegungen und Gelenke &mdash; geeignet als unabhängige Stichprobe für einen
-                            Einstichproben-t-Test gegen einen fixen Referenzwert (z.B. H0: &mu; &ge; 8&deg;
-                            vs. H1: &mu; &lt; 8&deg;) bzw. für einen Test des Bias gegen &mu; = 0
-                            (Frage: besteht ein systematischer Versatz zwischen den Systemen?).
+                            Bewegungen und Gelenke. Geprüft wird einseitig H0: &mu; &ge; 8&deg;
+                            gegen H1: &mu; &lt; 8&deg; (&alpha; = 0,05).
                         </div>
                 """);
 
@@ -444,6 +447,8 @@ public class HtmlChartExportService {
                                 <tr><td>Anzahl Probanden (n)</td><td>%d</td></tr>
                                 <tr><td>Mittelwert RMSE</td><td>%.2f&deg;</td></tr>
                                 <tr><td>Standardabweichung (SD) RMSE</td><td>%.2f&deg;</td></tr>
+                                <tr><td>Median RMSE</td><td>%.2f&deg;</td></tr>
+                                <tr><td>Spanne RMSE</td><td>%.2f&deg;&ndash;%.2f&deg;</td></tr>
                                 <tr><td>Probanden &lt; %.0f&deg;</td><td>%d von %d</td></tr>
                                 <tr><td>Mittelwert Bias (OpenCap &minus; Theia)</td><td>%s</td></tr>
                                 <tr><td>Standardabweichung (SD) Bias</td><td>%s</td></tr>
@@ -451,9 +456,11 @@ public class HtmlChartExportService {
                                 <tr><td>Standardabweichung (SD) RMSE zentriert</td><td>%s</td></tr>
                             </tbody>
                         </table>
-                """, n, mean, sd, REFERENCE_THRESHOLD_DEGREES, belowThreshold, n,
+                """, n, mean, sd, median, sortedRmse[0], sortedRmse[n - 1], REFERENCE_THRESHOLD_DEGREES, belowThreshold, n,
                 formatSignedDegrees(meanOf(biasByParticipant)), formatDegrees(sdOf(biasByParticipant)),
                 formatDegrees(meanOf(rmseCenteredByParticipant)), formatDegrees(sdOf(rmseCenteredByParticipant))));
+
+        writeHypothesisTestTable(writer, perParticipantMeanRmse, sortedParticipantIds);
 
         writer.write("""
                         <table>
@@ -483,6 +490,142 @@ public class HtmlChartExportService {
                 + escapeHtml(toCopyableValueList(sortedParticipantIds, biasByParticipant)) + "</div>");
         writer.write("<div class=\"chart-meta\">Zentrierte RMSE-Werteliste (kopierbar, Punkt als Dezimaltrennzeichen): "
                 + escapeHtml(toCopyableValueList(sortedParticipantIds, rmseCenteredByParticipant)) + "</div>");
+    }
+
+    /**
+     * Schreibt je Bewegung die Anzahl der ausgewerteten OpenCap/Theia-Versuchspaare. Gepaart wird
+     * wie in der Statistik über den Dateinamen ohne Endung innerhalb desselben Probanden.
+     */
+    private void writeEvaluatedPairsTable(BufferedWriter writer, List<TrialSession> trialSessions) throws IOException {
+        writer.write("""
+                            <h3>Ausgewertete Versuchspaare (OpenCap/Theia) je Bewegung</h3>
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Bewegungsform</th>
+                                        <th>Ausgewertete Versuchspaare</th>
+                                        <th>Geplant (3 je Proband)</th>
+                                        <th>Probanden mit mindestens einem Paar</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                    """);
+
+        for (Movement movement : MOVEMENT_ORDER) {
+            int pairs = 0;
+            int participantsWithPair = 0;
+            for (TrialSession session : trialSessions) {
+                int sessionPairs = countEvaluatedPairs(session, movement);
+                pairs += sessionPairs;
+                if (sessionPairs > 0) participantsWithPair++;
+            }
+            writer.write("<tr><td><strong>" + movementLabel(movement) + "</strong></td><td>" + pairs + "</td><td>"
+                    + (trialSessions.size() * PLANNED_TRIALS_PER_MOVEMENT) + "</td><td>"
+                    + participantsWithPair + " von " + trialSessions.size() + "</td></tr>");
+        }
+        writer.write("</tbody></table>");
+    }
+
+    private int countEvaluatedPairs(TrialSession session, Movement movement) {
+        List<Trial> trials = session.getTrials();
+        if (trials == null) return 0;
+
+        int pairs = 0;
+        for (Trial openCap : trials) {
+            if (openCap == null || !openCap.isOpenCap() || openCap.getMovement() != movement) continue;
+            String baseName = baseFileName(openCap);
+            if (baseName == null) continue;
+
+            boolean paired = trials.stream()
+                    .filter(theia -> theia != null && !theia.isOpenCap() && theia.getMovement() == movement)
+                    .filter(theia -> baseName.equals(baseFileName(theia)))
+                    .findFirst()
+                    .filter(theia -> Joints.ANALYSIS_SCOPE.stream().anyMatch(joint ->
+                            openCap.getNormalizedAngles(joint) != null && theia.getNormalizedAngles(joint) != null))
+                    .isPresent();
+            if (paired) pairs++;
+        }
+        return pairs;
+    }
+
+    private String baseFileName(Trial trial) {
+        String fileName = trial.getSourceFileName().toLowerCase().trim();
+        return fileName.contains(".") ? fileName.substring(0, fileName.lastIndexOf('.')) : null;
+    }
+
+    /**
+     * Schreibt die Signifikanztests der gemittelten Pro-Proband-RMSE gegen den Referenzwert sowie
+     * dieselbe Prüfung ohne den Probanden mit dem höchsten RMSE (Sensitivitätsanalyse).
+     */
+    private void writeHypothesisTestTable(BufferedWriter writer, Map<String, Double> rmseByParticipant,
+                                          List<String> sortedParticipantIds) throws IOException {
+        double[] values = sortedParticipantIds.stream().mapToDouble(rmseByParticipant::get).toArray();
+        ReferenceValueTest.Result result = ReferenceValueTest.test(values, REFERENCE_THRESHOLD_DEGREES);
+
+        writer.write("<h3>Signifikanztests</h3><table><thead><tr><th>Test</th><th>Ergebnis</th></tr></thead><tbody>");
+        writer.write("<tr><td>Shapiro-Wilk-Test auf Normalverteilung</td><td>W = " + formatStatistic(result.shapiroW())
+                + "; p = " + formatP(result.shapiroP()) + "</td></tr>");
+
+        if (Double.isNaN(result.shapiroP())) {
+            writer.write("<tr><td>Testentscheidung</td><td>Für diese Stichprobe nicht berechenbar</td></tr></tbody></table>");
+            return;
+        }
+
+        writer.write("<tr><td>" + selectedTestName(result) + "</td><td>" + selectedTestSummary(result) + "</td></tr>");
+        writer.write("<tr><td>Testentscheidung</td><td>" + (result.nullHypothesisRejected()
+                ? "H0 wird verworfen (p &lt; 0,05)"
+                : "H0 wird nicht verworfen (p &gt; 0,05)") + "</td></tr>");
+
+        if (sortedParticipantIds.size() > 3) {
+            String highestId = sortedParticipantIds.stream().max(Comparator.comparing(rmseByParticipant::get)).orElseThrow();
+            double[] withoutHighest = sortedParticipantIds.stream()
+                    .filter(id -> !id.equals(highestId))
+                    .mapToDouble(rmseByParticipant::get)
+                    .toArray();
+            ReferenceValueTest.Result sensitivity = ReferenceValueTest.test(withoutHighest, REFERENCE_THRESHOLD_DEGREES);
+            double meanWithoutHighest = Arrays.stream(withoutHighest).average().orElse(Double.NaN);
+
+            writer.write("<tr><td>Sensitivitätsanalyse ohne " + escapeHtml(highestId) + " (höchster RMSE)</td><td>n = "
+                    + withoutHighest.length + "; M = " + formatDegrees(meanWithoutHighest)
+                    + "; Shapiro-Wilk: W = " + formatStatistic(sensitivity.shapiroW()) + ", p = " + formatP(sensitivity.shapiroP())
+                    + "; " + selectedTestName(sensitivity) + ": " + selectedTestSummary(sensitivity)
+                    + "; H0 wird " + (sensitivity.nullHypothesisRejected() ? "verworfen" : "nicht verworfen") + "</td></tr>");
+        }
+        writer.write("</tbody></table>");
+    }
+
+    private String selectedTestName(ReferenceValueTest.Result result) {
+        return result.normalityAssumed()
+                ? "Einseitiger Einstichproben-t-Test gegen 8&deg;"
+                : "Einseitiger Wilcoxon-Vorzeichen-Rang-Test gegen 8&deg;";
+    }
+
+    private String selectedTestSummary(ReferenceValueTest.Result result) {
+        if (result.normalityAssumed()) {
+            return "t(" + result.df() + ") = " + formatStatistic(result.t()) + "; p = " + formatP(result.tP());
+        }
+        String v = String.format(Locale.GERMAN, result.wilcoxonV() % 1 == 0 ? "%.0f" : "%.1f", result.wilcoxonV());
+        return "V = " + v + "; z = " + formatStatistic(result.wilcoxonZ()) + "; p = " + formatP(result.wilcoxonP())
+                + "; r = " + formatStatistic(result.wilcoxonR());
+    }
+
+    private String formatStatistic(double value) {
+        return Double.isNaN(value) ? "&ndash;" : String.format(Locale.GERMAN, "%.2f", value);
+    }
+
+    private String formatP(double value) {
+        return Double.isNaN(value) ? "&ndash;" : String.format(Locale.GERMAN, "%.3f", value);
+    }
+
+    /** Bezeichnung der Bewegung wie in der Arbeit. */
+    private String movementLabel(Movement movement) {
+        return switch (movement) {
+            case SQUAT -> "Squat";
+            case COUNTERMOVEMENT_JUMP -> "CMJ";
+            case LATERAL_LUNGE_LEFT -> "Seitlicher Ausfallschritt links";
+            case LATERAL_LUNGE_RIGHT -> "Seitlicher Ausfallschritt rechts";
+            case BECKEN_RUMPF_ROTATION -> "BRR";
+        };
     }
 
     /**

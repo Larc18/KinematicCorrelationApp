@@ -21,6 +21,7 @@ import java.util.stream.Stream;
 public class TrialSessionBuilder {
 
     private final Path rootFolder;
+    private final AngleMethod angleMethod;
     private final List<TrialSession> trialSessions = new ArrayList<>();
 
     /**
@@ -31,7 +32,20 @@ public class TrialSessionBuilder {
      * @throws IOException if the folder structure cannot be read
      */
     public TrialSessionBuilder(String rootFolderPath) throws IOException {
+        this(rootFolderPath, ImportService.DEFAULT_ANGLE_METHOD);
+    }
+
+    /**
+     * Scans {@code rootFolderPath} like {@link #TrialSessionBuilder(String)}, using an explicit
+     * calculation variant for the Theia knee and ankle angles.
+     *
+     * @param rootFolderPath the root folder containing one subdirectory per participant
+     * @param angleMethod    the calculation variant for the Theia knee and ankle angles
+     * @throws IOException if the folder structure cannot be read
+     */
+    public TrialSessionBuilder(String rootFolderPath, AngleMethod angleMethod) throws IOException {
         this.rootFolder = Path.of(rootFolderPath);
+        this.angleMethod = angleMethod;
 
         System.out.println("========================================");
         System.out.println("Starting TrialSessionBuilder");
@@ -132,7 +146,7 @@ public class TrialSessionBuilder {
                 movementName, openCapFileCount, theiaFileCount);
 
         // Pipeline-Import starten
-        ImportService importService = new ImportService(movementDir.toString());
+        ImportService importService = new ImportService(movementDir.toString(), angleMethod);
         List<Trial> movementTrials = importService.getTrialList();
 
         int pairedCount = 0;

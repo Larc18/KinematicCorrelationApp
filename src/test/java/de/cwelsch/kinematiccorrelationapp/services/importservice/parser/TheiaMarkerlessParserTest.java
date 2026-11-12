@@ -1,5 +1,7 @@
 package de.cwelsch.kinematiccorrelationapp.services.importservice.parser;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -242,6 +244,119 @@ class TheiaMarkerlessParserTest {
         assertEquals(35.0, data.getData().get("hip_flexion_r").get(0), 1e-3);
         assertEquals(8.0, data.getData().get("hip_adduction_r").get(0), 1e-3);
         assertEquals(-6.0, data.getData().get("hip_rotation_r").get(0), 1e-3);
+    }
+
+    private static double[][] rotationX(double degrees) {
+        double c = Math.cos(Math.toRadians(degrees)), s = Math.sin(Math.toRadians(degrees));
+        return new double[][]{{1, 0, 0}, {0, c, -s}, {0, s, c}};
+    }
+
+    private static double[][] rotationZ(double degrees) {
+        double c = Math.cos(Math.toRadians(degrees)), s = Math.sin(Math.toRadians(degrees));
+        return new double[][]{{c, -s, 0}, {s, c, 0}, {0, 0, 1}};
+    }
+
+    private static double[][] multiply(double[][] a, double[][] b) {
+        double[][] result = new double[3][3];
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < 3; j++) {
+                for (int k = 0; k < 3; k++) {
+                    result[i][j] += a[i][k] * b[k][j];
+                }
+            }
+        }
+        return result;
+    }
+
+    private static String pose(double[][] r) {
+        return "[%s,%s,%s,0, %s,%s,%s,0, %s,%s,%s,0, 0,0,0,1]".formatted(
+                r[0][0], r[0][1], r[0][2], r[1][0], r[1][1], r[1][2], r[2][0], r[2][1], r[2][2]);
+    }
+
+    private static String segment(String name, double[][] rotation) {
+        return "{ \"name\": \"%s\", \"pose\": [ %s ] }".formatted(name, pose(rotation));
+    }
+
+    private static String theiaJson(String... segments) {
+        return "{ \"trial\": { \"frame_rate\": 85.0 }, \"data\": { \"subjects\": [ { \"segments\": [ %s ] } ] } }"
+                .formatted(String.join(",", segments));
+    }
+
+    @Test
+    @DisplayName("Should isolate a 90-degree rotation about the flexion axis in the relative rotation of two rotated segments")
+    void testComputeRelativeJointAngles_KnownMatrices_IsolatesFlexionAxis() throws IOException {
+        // Proximales Segment bewusst nicht die Identität, damit wirklich Rrel = R_proximal^T * R_distal geprüft wird.
+        double[][] thigh = multiply(rotationZ(25), rotationX(10));
+        double[][] shank = multiply(thigh, rotationX(90));
+
+        ObjectMapper mapper = new ObjectMapper();
+        JsonNode thighPoses = mapper.readTree("[" + pose(thigh) + "]");
+        JsonNode shankPoses = mapper.readTree("[" + pose(shank) + "]");
+
+        TheiaMarkerlessParser.RelativeJointAngles angles = parser.computeRelativeJointAngles(thighPoses, shankPoses);
+
+        assertEquals(90.0, angles.flexion().get(0), 1e-6);
+        assertEquals(0.0, angles.adduction().get(0), 1e-6);
+        assertEquals(0.0, angles.rotation().get(0), 1e-6);
+    }
+
+    @Test
+    @DisplayName("Should report knee flexion as positive when the shank rotates negatively about the thigh's X axis")
+    void testParse_KneeFlexion_IsPositiveForNegativeRotationAboutX() throws IOException {
+        double[][] thigh = rotationZ(30);
+        String path = writeJsonFile("knee.json", theiaJson(
+                segment("r_thigh", thigh),
+                segment("r_shank", multiply(thigh, rotationX(-90))),
+                segment("l_thigh", thigh),
+                segment("l_shank", multiply(thigh, rotationX(-45)))));
+
+        Parser.MotionData data = parser.parse(path);
+
+        assertEquals(90.0, data.getData().get("knee_angle_r").get(0), 1e-6);
+        assertEquals(45.0, data.getData().get("knee_angle_l").get(0), 1e-6);
+    }
+
+    @Test
+    @DisplayName("Should report ankle dorsiflexion as positive and plantarflexion as negative without a neutral offset")
+    void testParse_AnkleAngle_KeepsSignOfRotationAboutX() throws IOException {
+        double[][] shank = rotationZ(-20);
+        String path = writeJsonFile("ankle.json", theiaJson(
+                segment("r_shank", shank),
+                segment("r_foot", multiply(shank, rotationX(20))),
+                segment("l_shank", shank),
+                segment("l_foot", multiply(shank, rotationX(-35)))));
+
+        Parser.MotionData data = parser.parse(path);
+
+        assertEquals(20.0, data.getData().get("ankle_angle_r").get(0), 1e-6);
+        assertEquals(-35.0, data.getData().get("ankle_angle_l").get(0), 1e-6);
+    }
+
+    @Test
+    @DisplayName("Should provide knee_angle_* and ankle_angle_* when thigh, shank and foot segments exist on both sides")
+    void testParse_KneeAndAngleKeys_ArePresent() throws IOException {
+        double[][] identity = rotationX(0);
+        String path = writeJsonFile("keys.json", theiaJson(
+                segment("r_thigh", identity), segment("r_shank", identity), segment("r_foot", identity),
+                segment("l_thigh", identity), segment("l_shank", identity), segment("l_foot", identity)));
+
+        Parser.MotionData data = parser.parse(path);
+
+        for (String key : List.of("knee_angle_r", "knee_angle_l", "ankle_angle_r", "ankle_angle_l")) {
+            assertTrue(data.getData().containsKey(key), key + " fehlt im Parser-Ergebnis");
+            assertEquals(1, data.getData().get(key).size());
+        }
+    }
+
+    @Test
+    @DisplayName("Should not provide knee or ankle angles when the required neighbouring segment is missing")
+    void testParse_MissingNeighbourSegment_ProducesNoKneeOrAnkleAngle() throws IOException {
+        String path = writeJsonFile("missing.json", theiaJson(segment("r_shank", rotationX(0))));
+
+        Parser.MotionData data = parser.parse(path);
+
+        assertFalse(data.getData().containsKey("knee_angle_r"), "ohne r_thigh darf kein Kniewinkel entstehen");
+        assertFalse(data.getData().containsKey("ankle_angle_r"), "ohne r_foot darf kein Sprunggelenkwinkel entstehen");
     }
 
     @Test

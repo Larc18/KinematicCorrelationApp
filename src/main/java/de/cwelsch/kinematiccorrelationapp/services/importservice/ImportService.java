@@ -22,7 +22,10 @@ import java.util.stream.Stream;
  */
 public class ImportService {
 
-    // KALIBRIERUNGSKORREKTUR SPRUNGGELENK: Der 3-Punkte-Vektorwinkel zwischen (Knie->Sprunggelenk)
+    // Standardvariante für Knie und Sprunggelenk bei Theia-Trials.
+    public static final AngleMethod DEFAULT_ANGLE_METHOD = AngleMethod.CARDAN;
+
+    // KALIBRIERUNGSKORREKTUR SPRUNGGELENK (nur AngleMethod.VECTOR): Der 3-Punkte-Vektorwinkel zwischen (Knie->Sprunggelenk)
     // und (Zehen->Sprunggelenk) liegt bei Theias r_foot/r_toes-Landmarkendefinition im entspannten,
     // ruhigen Stand NICHT bei 90° (wie ursprünglich angenommen), sondern systembedingt bei ~111.6°.
     // Ohne Korrektur erzeugt das einen konstanten ~22° Offset gegenüber OpenCap über die gesamte
@@ -38,6 +41,7 @@ public class ImportService {
     private static final double ANKLE_NEUTRAL_REFERENCE_DEGREES = 90.0 + 21.59;
 
     private final String url;
+    private final AngleMethod angleMethod;
     private final List<Trial> trialList;
 
     /**
@@ -47,7 +51,19 @@ public class ImportService {
      * @throws IOException if the folder or its files cannot be read
      */
     public ImportService(String url) throws IOException {
+        this(url, DEFAULT_ANGLE_METHOD);
+    }
+
+    /**
+     * Creates the import service with an explicit calculation variant for the Theia knee and ankle angles.
+     *
+     * @param url         the path to the folder containing the {@code opencap}/{@code theia} subfolders
+     * @param angleMethod the calculation variant for the Theia knee and ankle angles
+     * @throws IOException if the folder or its files cannot be read
+     */
+    public ImportService(String url, AngleMethod angleMethod) throws IOException {
         this.url = url;
+        this.angleMethod = angleMethod;
         this.trialList = new ArrayList<>();
         if (checkImportField()) {
             importAllTrials();
@@ -238,13 +254,21 @@ public class ImportService {
                 // sind zwar (noch) nicht Teil von Joints.ANALYSIS_SCOPE (siehe dortiger Kommentar),
                 // werden aber jetzt mitgelesen, da der Parser sie liefert und sie z. B. für eine
                 // Plausibilitätsdiskussion im Anhang nützlich sein können.
+                // Bei AngleMethod.CARDAN gilt dasselbe für Knie (Oberschenkel->Unterschenkel) und
+                // Sprunggelenk (Unterschenkel->Fuß); bei AngleMethod.VECTOR entstehen sie in Schritt 4.
                 // PELVIS_TX/TY/TZ werden bewusst NICHT gelesen (Einheit: Meter, nicht Grad).
-                for (Joints joint : List.of(
+                List<Joints> parserAngleJoints = new ArrayList<>(List.of(
                         Joints.PELVIS_TILT, Joints.PELVIS_LIST, Joints.PELVIS_ROTATION,
                         Joints.LUMBAR_EXTENSION, Joints.LUMBAR_BENDING, Joints.LUMBAR_ROTATION,
                         Joints.HIP_FLEXION_R, Joints.HIP_FLEXION_L,
                         Joints.HIP_ADDUCTION_R, Joints.HIP_ADDUCTION_L,
-                        Joints.HIP_ROTATION_R, Joints.HIP_ROTATION_L)) {
+                        Joints.HIP_ROTATION_R, Joints.HIP_ROTATION_L));
+                if (angleMethod == AngleMethod.CARDAN) {
+                    parserAngleJoints.addAll(List.of(
+                            Joints.KNEE_ANGLE_R, Joints.KNEE_ANGLE_L,
+                            Joints.ANKLE_ANGLE_R, Joints.ANKLE_ANGLE_L));
+                }
+                for (Joints joint : parserAngleJoints) {
                     // Direkter Key-Lookup auf der originalen columns-Map (case-sensitive, exakt wie Parser)
                     Double val = getValueAt(coords, joint.getOpenCapKey().toLowerCase().trim(), frameIndex);
                     if (val != null && !val.isNaN()) {
@@ -268,7 +292,7 @@ public class ImportService {
                 // HINWEIS: HIP_FLEXION_R/L werden NICHT mehr hier aus einem 3-Punkte-Vektorwinkel
                 // berechnet (vermischte alle 3 Hüft-Freiheitsgrade) — siehe Schritt 2, wo der Wert
                 // jetzt aus der sauber zerlegten relativen Becken->Oberschenkel-Rotationsmatrix
-                // gelesen wird (siehe TheiaMarkerlessParser.computeRelativeFlexion).
+                // gelesen wird (siehe TheiaMarkerlessParser.computeRelativeJointAngles).
 
                 // --- RECHTE UNTERE EXTREMITÄT ---
                 Point3D rThigh = jointCenters.get(Joints.HIP_FLEXION_R);
@@ -276,11 +300,11 @@ public class ImportService {
                 Point3D rFoot = jointCenters.get(Joints.ANKLE_ANGLE_R);
                 Point3D rToes = jointCenters.get(Joints.MTP_ANGLE_R);
 
-                if (rThigh != null && rShank != null && rFoot != null) {
+                if (angleMethod == AngleMethod.VECTOR && rThigh != null && rShank != null && rFoot != null) {
                     jointAngles.put(Joints.KNEE_ANGLE_R,
                             Math.abs(180.0 - Point3D.calculateAngle(rThigh.subtract(rShank), rFoot.subtract(rShank))));
                 }
-                if (rShank != null && rFoot != null && rToes != null) {
+                if (angleMethod == AngleMethod.VECTOR && rShank != null && rFoot != null && rToes != null) {
                     // CRITICAL FIX: KNEE_ANGLE/HIP_FLEXION dürfen Math.abs() behalten, weil ihr
                     // Referenzpunkt (180°) am RAND des möglichen Wertebereichs von calculateAngle()
                     // ([0°,180°]) liegt — abs() ist dort ein No-op. Der Sprunggelenk-Referenzpunkt
@@ -300,11 +324,11 @@ public class ImportService {
                 Point3D lFoot = jointCenters.get(Joints.ANKLE_ANGLE_L);
                 Point3D lToes = jointCenters.get(Joints.MTP_ANGLE_L);
 
-                if (lThigh != null && lShank != null && lFoot != null) {
+                if (angleMethod == AngleMethod.VECTOR && lThigh != null && lShank != null && lFoot != null) {
                     jointAngles.put(Joints.KNEE_ANGLE_L,
                             Math.abs(180.0 - Point3D.calculateAngle(lThigh.subtract(lShank), lFoot.subtract(lShank))));
                 }
-                if (lShank != null && lFoot != null && lToes != null) {
+                if (angleMethod == AngleMethod.VECTOR && lShank != null && lFoot != null && lToes != null) {
                     jointAngles.put(Joints.ANKLE_ANGLE_L,
                             ANKLE_NEUTRAL_REFERENCE_DEGREES - Point3D.calculateAngle(lShank.subtract(lFoot), lToes.subtract(lFoot)));
                 }

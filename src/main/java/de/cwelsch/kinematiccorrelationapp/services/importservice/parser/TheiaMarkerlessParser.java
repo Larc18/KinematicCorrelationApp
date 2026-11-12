@@ -80,9 +80,10 @@ public class TheiaMarkerlessParser implements Parser {
         List<Double> timeColumn = new ArrayList<>();
         motionData.getData().put("time", timeColumn);
 
-        // Pose-Arrays von Becken und Oberschenkeln merken, um nach der Segment-Schleife die
-        // Hüftflexion aus der RELATIVEN Rotation (Becken -> Oberschenkel) zu berechnen.
+        // Pose-Arrays von Becken, Ober-/Unterschenkeln und Füßen merken, um nach der Segment-Schleife
+        // Hüfte, Knie und Sprunggelenk aus der RELATIVEN Rotation benachbarter Segmente zu berechnen.
         JsonNode pelvisPoseArray = null, rThighPoseArray = null, lThighPoseArray = null;
+        JsonNode rShankPoseArray = null, lShankPoseArray = null, rFootPoseArray = null, lFootPoseArray = null;
 
         for (JsonNode segment : segmentsArray) {
             String segmentName = segment.path("name").asText().toLowerCase().trim();
@@ -92,6 +93,10 @@ public class TheiaMarkerlessParser implements Parser {
                 if (segmentName.equals("pelvis")) pelvisPoseArray = poseArray;
                 if (segmentName.equals("r_thigh")) rThighPoseArray = poseArray;
                 if (segmentName.equals("l_thigh")) lThighPoseArray = poseArray;
+                if (segmentName.equals("r_shank")) rShankPoseArray = poseArray;
+                if (segmentName.equals("l_shank")) lShankPoseArray = poseArray;
+                if (segmentName.equals("r_foot")) rFootPoseArray = poseArray;
+                if (segmentName.equals("l_foot")) lFootPoseArray = poseArray;
             }
 
             if (!poseArray.isArray() || poseArray.isEmpty()) continue;
@@ -195,15 +200,40 @@ public class TheiaMarkerlessParser implements Parser {
             }
         }
 
+        // Knie (Oberschenkel -> Unterschenkel) und oberes Sprunggelenk (Unterschenkel -> Fuß) nach
+        // demselben Prinzip wie die Hüfte. Maßgeblich ist jeweils nur die X-Komponente (Herleitung
+        // siehe xyzCardanDecomposition()). Das Vorzeichen des Knies wird umgekehrt, weil die Beugung
+        // eine negative Rotation um die lokale X-Achse ist, OpenCap die Knieflexion aber positiv
+        // angibt. Beim Sprunggelenk ist die Dorsalextension bereits positiv.
+        putKneeAngle(motionData, "knee_angle_r", rThighPoseArray, rShankPoseArray);
+        putKneeAngle(motionData, "knee_angle_l", lThighPoseArray, lShankPoseArray);
+        putAnkleAngle(motionData, "ankle_angle_r", rShankPoseArray, rFootPoseArray);
+        putAnkleAngle(motionData, "ankle_angle_l", lShankPoseArray, lFootPoseArray);
+
         System.out.println("[DEBUG] JSON Parsing abgeschlossen. Kanäle extrahiert: " + motionData.getData().size());
         return motionData;
     }
 
+    private void putKneeAngle(TheiaMotionData motionData, String key, JsonNode thighPoseArray, JsonNode shankPoseArray) {
+        if (thighPoseArray != null && shankPoseArray != null) {
+            List<Double> flexion = new ArrayList<>(computeRelativeJointAngles(thighPoseArray, shankPoseArray).flexion());
+            flexion.replaceAll(angle -> -angle);
+            motionData.getData().put(key, flexion);
+        }
+    }
+
+    private void putAnkleAngle(TheiaMotionData motionData, String key, JsonNode shankPoseArray, JsonNode footPoseArray) {
+        if (shankPoseArray != null && footPoseArray != null) {
+            motionData.getData().put(key, computeRelativeJointAngles(shankPoseArray, footPoseArray).flexion());
+        }
+    }
+
     /**
      * Ergebnis der Zerlegung einer relativen Segment-Rotation (Rrel = R_proximal^T * R_distal) in die
-     * drei Freiheitsgrade eines Kugelgelenks (Hüfte) nach dem Joint-Coordinate-System-Prinzip.
+     * drei Komponenten nach dem Joint-Coordinate-System-Prinzip. Die Bezeichnungen folgen der Hüfte;
+     * bei Knie und Sprunggelenk wird nur {@code flexion} (X-Komponente) verwendet.
      */
-    private record RelativeJointAngles(List<Double> flexion, List<Double> adduction, List<Double> rotation) {
+    record RelativeJointAngles(List<Double> flexion, List<Double> adduction, List<Double> rotation) {
     }
 
     /**
@@ -212,7 +242,7 @@ public class TheiaMarkerlessParser implements Parser {
      * (Grood &amp; Suntay, 1983) in Flexion (X), Adduktion (Y) und Innen-/Außenrotation (Z).
      * Frames ohne vollständige 3x3-Rotationsuntermatrix (weniger als 12 Werte) liefern NaN in allen drei Komponenten.
      */
-    private RelativeJointAngles computeRelativeJointAngles(JsonNode proximalPoseArray, JsonNode distalPoseArray) {
+    RelativeJointAngles computeRelativeJointAngles(JsonNode proximalPoseArray, JsonNode distalPoseArray) {
         int n = Math.min(proximalPoseArray.size(), distalPoseArray.size());
         List<Double> flexion = new ArrayList<>(n);
         List<Double> adduction = new ArrayList<>(n);
@@ -263,6 +293,16 @@ public class TheiaMarkerlessParser implements Parser {
      *   <li>Becken-Rumpf-Rotations-Trials (isolieren die transversale Rumpfrotation): Z-Komponente von
      *   Becken UND LWS zeigt die dominante Amplitude (~135&deg; ROM), X- und Y-Komponente bleiben
      *   vergleichsweise klein (ROM &lt;27°).</li>
+     *   <li>Knie und oberes Sprunggelenk (alle 42 Squat-Trials der 14 Proband:innen, Mittelwerte
+     *   rechts/links): Beim Knie (Rrel = R_oberschenkel^T*R_unterschenkel) dominiert in allen Trials die
+     *   X-Komponente (ROM 107.7&deg;/108.2&deg;; Y 6.7&deg;/7.0&deg;, Z 16.1&deg;/16.3&deg;). Sie verläuft bei
+     *   zunehmender Beugung negativ (mittlere Auslenkung -105&deg;), OpenCap dagegen positiv, daher wird
+     *   das Vorzeichen umgekehrt. Beim Sprunggelenk (Rrel = R_unterschenkel^T*R_fuß) dominiert die
+     *   X-Komponente in 40 von 42 Trials je Seite (ROM 26.0&deg;/26.1&deg;; Y 7.0&deg;/6.8&deg;, Z 11.6&deg;/10.9&deg;).
+     *   Die Ausnahmen sind die Trials SQT_0002 und SQT_0003 von Proband 5, in denen Z dominiert.
+     *   Die Dorsalextension im Squat ist bereits positiv wie bei OpenCap, daher keine Vorzeichenumkehr.
+     *   Ein empirischer Neutralwert ist nicht nötig: Die Theia-Segmentachsen von Unterschenkel und Fuß
+     *   sind im Stand nahezu parallel (X-Komponente in den ersten 10 Frames im Mittel 2.2&deg;/2.7&deg;).</li>
      * </ul>
      * Diese Kreuzvalidierung über zwei unabhängige Bewegungsaufgaben liefert dieselbe qualitative
      * Achsenzuordnung wie die ursprüngliche (gegen OpenCap-Kurvenform kalibrierte) Fassung dieser
